@@ -4,7 +4,7 @@ Bookmark Cleaner - Clean labels and preserve folder structure
 
 This script cleans browser bookmarks by:
 - Preserving original folder structure
-- Cleaning bookmark labels for consistency  
+- Cleaning bookmark labels for consistency
 - Handling duplicates intelligently
 - Optional URL validation
 """
@@ -17,6 +17,7 @@ import re
 import time
 import os
 
+
 def extract_domain(url):
     """Extract clean domain name from URL in consistent format"""
     try:
@@ -27,8 +28,9 @@ def extract_domain(url):
             domain = domain[4:]
         # Ensure consistent format - always include .com/.org/.net etc
         return domain
-    except:
+    except Exception:
         return "unknown.com"
+
 
 def clean_title(title):
     """Clean up bookmark title by removing common suffixes and junk"""
@@ -77,6 +79,7 @@ def clean_title(title):
     
     return cleaned or "Untitled"
 
+
 def extract_all_bookmarks(file_path):
     """Extract all bookmarks from HTML file"""
     with open(file_path, 'r', encoding='utf-8') as file:
@@ -112,7 +115,8 @@ def extract_all_bookmarks(file_path):
             # Count domain occurrences
             domain_counts[domain] = domain_counts.get(domain, 0) + 1
     
-    # Second pass: create formatted labels with unique identifiers for duplicates
+    # Second pass: create formatted labels with unique identifiers
+    # for duplicates
     domain_usage = {}
     for bookmark in bookmarks:
         domain = bookmark['domain']
@@ -127,41 +131,63 @@ def extract_all_bookmarks(file_path):
             try:
                 parsed_url = urlparse(bookmark['url'])
                 path = parsed_url.path.strip('/')
-                path_parts = [p for p in path.split('/') if p and p not in ['index.html', 'index.php']]
+                excluded = ['index.html', 'index.php']
+                path_parts = [p for p in path.split('/')
+                              if p and p not in excluded]
                 
                 # Check if this is a homepage
-                if not path_parts or (len(path_parts) == 1 and path_parts[0].lower() in ['en', 'us', 'home', 'index']):
+                common_paths = ['en', 'us', 'home', 'index']
+                is_homepage = (not path_parts or
+                               (len(path_parts) == 1 and
+                                path_parts[0].lower() in common_paths))
+                
+                if is_homepage:
                     unique_part = "Homepage"
                 elif 'full-node' in bookmark['url']:
                     unique_part = "Full Node"
                 elif 'calculator' in bookmark['url']:
                     unique_part = "Calculator"
                 elif len(path_parts) >= 2:
-                    unique_part = path_parts[-1].replace('-', ' ').replace('_', ' ').title()
+                    part = path_parts[-1]
+                    unique_part = part.replace('-', ' ').replace('_', ' ')
+                    unique_part = unique_part.title()
                 else:
-                    unique_part = path_parts[0].replace('-', ' ').replace('_', ' ').title()
+                    part = path_parts[0]
+                    unique_part = part.replace('-', ' ').replace('_', ' ')
+                    unique_part = unique_part.title()
                 
                 # Clean up meaningless parts
-                if unique_part.lower() in ['en', 'us', 'index', 'home', 'main']:
+                meaningless = ['en', 'us', 'index', 'home', 'main']
+                if unique_part.lower() in meaningless:
                     unique_part = "Homepage"
                 
                 # Try URL fragment if no good path
                 if not unique_part and parsed_url.fragment:
-                    fragment = parsed_url.fragment.replace('-', ' ').replace('_', ' ').title()
-                    if fragment.lower() not in ['en', 'us', 'index', 'home']:
-                        unique_part = fragment
+                    fragment = parsed_url.fragment
+                    fragment_clean = fragment.replace('-', ' ')
+                    fragment_clean = fragment_clean.replace('_', ' ')
+                    fragment_title = fragment_clean.title()
+                    excluded_fragments = ['en', 'us', 'index', 'home']
+                    if fragment_title.lower() not in excluded_fragments:
+                        unique_part = fragment_title
                         
-            except:
+            except Exception:
                 pass
             
             # Fallback to clean title if URL extraction failed
-            if not unique_part or unique_part.lower() in ['en', 'us', 'index', 'home', 'main', 'page']:
+            excluded_parts = ['en', 'us', 'index', 'home', 'main', 'page']
+            if not unique_part or unique_part.lower() in excluded_parts:
                 clean_label = bookmark['clean_title']
-                if clean_label.lower() not in [domain.split('.')[0], 'en', 'us', 'home', 'homepage', 'main', 'index']:
+                excluded_labels = [domain.split('.')[0], 'en', 'us', 'home',
+                                   'homepage', 'main', 'index']
+                if clean_label.lower() not in excluded_labels:
                     unique_part = clean_label
                 else:
                     orig_words = bookmark['original_title'].split()
-                    meaningful_words = [w for w in orig_words if w.lower() not in ['en', 'us', 'home', 'the', 'and', 'or', 'of', 'in', 'to', 'for']]
+                    excluded_words = ['en', 'us', 'home', 'the', 'and', 'or',
+                                      'of', 'in', 'to', 'for']
+                    meaningful_words = [w for w in orig_words
+                                        if w.lower() not in excluded_words]
                     if len(meaningful_words) > 1:
                         unique_part = ' '.join(meaningful_words[:3])
                     else:
@@ -184,6 +210,7 @@ def extract_all_bookmarks(file_path):
     
     return bookmarks
 
+
 def create_html_with_clean_labels(original_file, bookmarks):
     """Create HTML maintaining original structure but with cleaned labels"""
     with open(original_file, 'r', encoding='utf-8') as file:
@@ -203,7 +230,8 @@ def create_html_with_clean_labels(original_file, bookmarks):
             a_tag.string = bookmark_lookup[url]
     
     # Add comment about cleaning
-    comment = soup.new_string('<!-- Bookmark labels cleaned by Bookmark Cleaner -->')
+    comment_text = '<!-- Bookmark labels cleaned by Bookmark Cleaner -->'
+    comment = soup.new_string(comment_text)
     if soup.find('meta'):
         soup.find('meta').insert_after(comment)
     
@@ -213,26 +241,30 @@ def create_html_with_clean_labels(original_file, bookmarks):
 def validate_bookmark(bookmark, session, timeout=10):
     """Validate a single bookmark"""
     try:
-        response = session.head(bookmark['url'], timeout=timeout, allow_redirects=True)
+        response = session.head(bookmark['url'], timeout=timeout,
+                                allow_redirects=True)
         bookmark['is_valid'] = True
         bookmark['status_code'] = response.status_code
         return bookmark
-    except:
+    except Exception:
         try:
-            response = session.get(bookmark['url'], timeout=timeout, allow_redirects=True)
+            response = session.get(bookmark['url'], timeout=timeout,
+                                   allow_redirects=True)
             bookmark['is_valid'] = True
             bookmark['status_code'] = response.status_code
             return bookmark
-        except:
+        except Exception:
             bookmark['is_valid'] = False
             bookmark['status_code'] = None
             return bookmark
 
+
 def validate_bookmarks(bookmarks, max_workers=5):
     """Validate all bookmarks"""
     session = requests.Session()
+    user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        'User-Agent': user_agent
     })
     
     print(f"Validating {len(bookmarks)} bookmarks...")
@@ -242,7 +274,8 @@ def validate_bookmarks(bookmarks, max_workers=5):
         validated_bookmark = validate_bookmark(bookmark, session)
         validated.append(validated_bookmark)
         status = "✓" if validated_bookmark['is_valid'] else "✗"
-        print(f"[{i+1}/{len(bookmarks)}] {status} {bookmark['formatted_label'][:50]}...")
+        label = bookmark['formatted_label'][:50]
+        print(f"[{i+1}/{len(bookmarks)}] {status} {label}...")
         time.sleep(0.1)  # Be nice to servers
     
     return validated
@@ -274,11 +307,15 @@ def main():
         valid = sum(1 for b in bookmarks if b.get('is_valid', False))
         invalid = sum(1 for b in bookmarks if b.get('is_valid') is False)
         
-        print(f"\n📈 Validation Summary:")
+        print("\n📈 Validation Summary:")
         print(f"  Total bookmarks: {total}")
         print(f"  Valid bookmarks: {valid}")
         print(f"  Invalid bookmarks: {invalid}")
-        print(f"  Success rate: {valid/(valid+invalid)*100:.1f}%" if (valid+invalid) > 0 else "No validation performed")
+        if (valid + invalid) > 0:
+            success_rate = valid / (valid + invalid) * 100
+            print(f"  Success rate: {success_rate:.1f}%")
+        else:
+            print("  No validation performed")
         
         # Show broken links
         broken_links = [b for b in bookmarks if b.get('is_valid') is False]
@@ -331,7 +368,8 @@ def main():
     print("✅ Files generated:")
     print(f"  📄 {output_html_path} - Original structure with clean labels")
     print(f"  📊 {output_json_path} - Detailed report")
-    print("\n🎉 Done! Bookmarks cleaned while preserving original folder structure!")
+    print("\n🎉 Done! Bookmarks cleaned while preserving original folder "
+          "structure!")
 
 
 if __name__ == "__main__":
