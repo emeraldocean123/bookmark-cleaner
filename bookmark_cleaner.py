@@ -758,6 +758,9 @@ def handle_ai_import(args: argparse.Namespace) -> None:
     
     # Get AI content
     ai_file = input("Enter path to AI-organized file (or press Enter to paste): ").strip()
+    # Remove quotes if present
+    if ai_file and ai_file[0] in ('"', "'") and ai_file[-1] in ('"', "'"):
+        ai_file = ai_file[1:-1]
     
     if ai_file:
         if not os.path.exists(ai_file):
@@ -787,6 +790,9 @@ def handle_ai_import(args: argparse.Namespace) -> None:
         
         # Load original bookmarks for metadata
         original_file = input("Enter path to original bookmarks file: ").strip()
+        # Remove quotes if present
+        if original_file and original_file[0] in ('"', "'") and original_file[-1] in ('"', "'"):
+            original_file = original_file[1:-1]
         if not os.path.exists(original_file):
             print(f"❌ Original file not found: {original_file}")
             return
@@ -920,6 +926,9 @@ def prompt_for_backup(file_path: str) -> str:
         return create_backup(file_path)
     elif choice == "2":
         custom_location = input("Enter backup directory path: ").strip()
+        # Remove quotes if present
+        if custom_location and custom_location[0] in ('"', "'") and custom_location[-1] in ('"', "'"):
+            custom_location = custom_location[1:-1]
         if not custom_location:
             print("Using same directory as bookmark file.")
             return create_backup(file_path)
@@ -1068,6 +1077,9 @@ def main() -> int:
         file_path = args.input_file
         if not file_path:
             file_path = input("📁 Enter path to bookmarks HTML file: ").strip()
+            # Remove quotes if user wrapped the path in quotes
+            if file_path and file_path[0] in ('"', "'") and file_path[-1] in ('"', "'"):
+                file_path = file_path[1:-1]
         
         # Validate input file
         if not file_path:
