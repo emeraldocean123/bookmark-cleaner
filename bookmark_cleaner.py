@@ -7,20 +7,69 @@ This script cleans browser bookmarks by:
 - Cleaning bookmark labels for consistency
 - Handling duplicates intelligently
 - Optional URL validation
+- AI-powered organization assistance
 """
 
+import sys
+import os
+import subprocess
+import importlib.util
+from datetime import datetime
+import shutil
+
+# Check and install dependencies if needed
+def check_and_install_dependencies():
+    """Check if dependencies are installed and offer to install them"""
+    required_packages = {
+        'bs4': 'beautifulsoup4',
+        'requests': 'requests',
+        'lxml': 'lxml',
+        'pyperclip': 'pyperclip'
+    }
+    
+    missing_packages = []
+    for module, package in required_packages.items():
+        if importlib.util.find_spec(module) is None:
+            missing_packages.append(package)
+    
+    if missing_packages:
+        print("⚠️  Missing required packages:")
+        for package in missing_packages:
+            print(f"  - {package}")
+        
+        response = input("\n📦 Would you like to install them now? (y/n): ").strip().lower()
+        if response.startswith('y'):
+            print("\n📥 Installing dependencies...")
+            try:
+                subprocess.check_call([sys.executable, "-m", "pip", "install"] + missing_packages)
+                print("✅ Dependencies installed successfully!")
+                print("Please restart the script to continue.\n")
+                sys.exit(0)
+            except subprocess.CalledProcessError:
+                print("❌ Failed to install dependencies.")
+                print("Please run: pip install -r requirements.txt")
+                sys.exit(1)
+        else:
+            print("\n❌ Cannot proceed without required dependencies.")
+            print("Please run: pip install -r requirements.txt")
+            sys.exit(1)
+
+# Check dependencies before importing them
+check_and_install_dependencies()
+
+# Now import the required modules
 from bs4 import BeautifulSoup
 import json
 import requests
 from urllib.parse import urlparse
 import re
 import time
-import os
 import argparse
-import sys
 import logging
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Tuple
 import concurrent.futures
+import pyperclip
+from pathlib import Path
 
 
 # Configuration defaults
@@ -348,17 +397,432 @@ def validate_bookmarks_sequential(bookmarks: List[Dict[str, Union[str, bool, int
     return validated
 
 
+def generate_ai_instructions() -> str:
+    """Generate comprehensive instructions for AI to reorganize bookmarks"""
+    return """# AI Bookmark Organization Instructions
+
+You are helping reorganize browser bookmarks into a logical folder structure. 
+
+## Your Task:
+1. Analyze the provided bookmarks list
+2. Group bookmarks into logical categories/folders
+3. Create a hierarchical folder structure that makes sense
+4. Output in the EXACT format specified below
+
+## Output Format:
+Use this EXACT structure (maintain spacing and symbols):
+
+```
+FOLDER: Work & Professional
+  github.com | GitHub Homepage
+  linkedin.com | LinkedIn Profile
+  
+  FOLDER: Development Tools
+    stackoverflow.com | Stack Overflow
+    developer.mozilla.org | MDN Web Docs
+  
+FOLDER: Entertainment & Media
+  youtube.com | YouTube
+  netflix.com | Netflix
+  
+  FOLDER: News & Articles
+    bbc.com | BBC News
+    reuters.com | Reuters
+```
+
+## Formatting Rules:
+- Use "FOLDER: Name" for folders (with colon)
+- Indent bookmarks with 2 spaces under their folder
+- Indent subfolders with 2 spaces, bookmarks under subfolders with 4 spaces  
+- Keep bookmark format: "domain | title"
+- Use descriptive folder names (Work, Entertainment, Tech, etc.)
+- Create max 3 levels deep (Main Folder > Subfolder > Bookmarks)
+- Group similar sites together logically
+
+## Guidelines:
+- Create 5-10 main categories maximum
+- Use subcategories for better organization
+- Keep folder names clear and intuitive
+- Group by purpose/topic, not just domain
+- Consider user workflow and access patterns
+
+Please organize the following bookmarks:
+
+"""
+
+
+def export_bookmarks_for_ai(bookmarks: List[Dict[str, Union[str, bool, int, None]]]) -> str:
+    """Export bookmarks in AI-ready format with instructions"""
+    ai_instructions = generate_ai_instructions()
+    
+    bookmark_list = []
+    for bookmark in bookmarks:
+        bookmark_list.append(f"{bookmark['formatted_label']}")
+    
+    return ai_instructions + "\n".join(bookmark_list)
+
+
+def export_bookmarks_flattened(bookmarks: List[Dict[str, Union[str, bool, int, None]]]) -> str:
+    """Export bookmarks as flat list"""
+    output = ["# Flattened Bookmarks List", ""]
+    
+    for bookmark in bookmarks:
+        output.append(f"{bookmark['formatted_label']}")
+    
+    return "\n".join(output)
+
+
+def extract_folder_structure_from_html(file_path: str) -> Dict[str, List[Dict]]:
+    """Extract original folder structure from HTML bookmarks"""
+    with open(file_path, 'r', encoding='utf-8') as file:
+        content = file.read()
+    
+    soup = BeautifulSoup(content, 'html.parser')
+    folder_structure = {"root": []}
+    
+    def parse_dl(dl_element, current_path="root"):
+        """Recursively parse DL elements to extract folder structure"""
+        current_list = folder_structure.setdefault(current_path, [])
+        
+        for child in dl_element.children:
+            if hasattr(child, 'name'):
+                if child.name == 'dt':
+                    # Check if this is a folder (has H3) or bookmark (has A)
+                    h3_element = child.find('h3')
+                    a_element = child.find('a', href=True)
+                    
+                    if h3_element:
+                        # This is a folder
+                        folder_name = h3_element.get_text().strip()
+                        folder_path = f"{current_path}/{folder_name}" if current_path != "root" else folder_name
+                        current_list.append({"type": "folder", "name": folder_name, "path": folder_path})
+                        
+                        # Look for next sibling DD with nested DL
+                        next_sibling = child.find_next_sibling('dd')
+                        if next_sibling:
+                            nested_dl = next_sibling.find('dl')
+                            if nested_dl:
+                                parse_dl(nested_dl, folder_path)
+                    
+                    elif a_element:
+                        # This is a bookmark
+                        url = a_element.get('href', '').strip()
+                        title = a_element.get_text().strip()
+                        if url and title:
+                            current_list.append({
+                                "type": "bookmark",
+                                "url": url,
+                                "title": title,
+                                "path": current_path
+                            })
+    
+    # Find the main bookmark structure
+    main_dl = soup.find('dl')
+    if main_dl:
+        parse_dl(main_dl)
+    
+    return folder_structure
+
+
+def export_bookmarks_preserve_structure(file_path: str, bookmarks: List[Dict[str, Union[str, bool, int, None]]]) -> str:
+    """Export bookmarks preserving original folder structure"""
+    folder_structure = extract_folder_structure_from_html(file_path)
+    
+    # Create lookup for clean labels
+    bookmark_lookup = {b['url']: b['formatted_label'] for b in bookmarks}
+    
+    output = ["# Bookmarks with Original Structure Preserved", ""]
+    
+    def format_structure(items, indent_level=0):
+        indent = "  " * indent_level
+        result = []
+        
+        for item in items:
+            if item["type"] == "folder":
+                result.append(f"{indent}FOLDER: {item['name']}")
+                # Get items in this folder
+                folder_items = folder_structure.get(item["path"], [])
+                if folder_items:
+                    result.extend(format_structure(folder_items, indent_level + 1))
+            elif item["type"] == "bookmark":
+                clean_label = bookmark_lookup.get(item["url"], f"{extract_domain(item['url'])} | {clean_title(item['title'])}")
+                result.append(f"{indent}{clean_label}")
+        
+        return result
+    
+    # Format root level items
+    if "root" in folder_structure:
+        output.extend(format_structure(folder_structure["root"]))
+    
+    return "\n".join(output)
+
+
+def import_ai_organized_bookmarks(ai_content: str) -> Tuple[Dict, List[Dict]]:
+    """Parse AI-organized bookmark content back into structure"""
+    lines = ai_content.strip().split('\n')
+    folder_structure = {}
+    all_bookmarks = []
+    current_folder_path = []
+    
+    for line in lines:
+        line = line.rstrip()
+        if not line:
+            continue
+            
+        # Count indentation level
+        indent_level = (len(line) - len(line.lstrip())) // 2
+        content = line.strip()
+        
+        if content.startswith('FOLDER:'):
+            folder_name = content[7:].strip()
+            # Adjust current path based on indent level
+            current_folder_path = current_folder_path[:indent_level]
+            current_folder_path.append(folder_name)
+            
+            folder_path = "/".join(current_folder_path)
+            if folder_path not in folder_structure:
+                folder_structure[folder_path] = []
+                
+        elif ' | ' in content:
+            # This is a bookmark
+            parts = content.split(' | ', 1)
+            if len(parts) == 2:
+                domain, title = parts
+                folder_path = "/".join(current_folder_path) if current_folder_path else "root"
+                
+                bookmark = {
+                    "domain": domain,
+                    "title": title,
+                    "folder_path": folder_path,
+                    "formatted_label": content
+                }
+                
+                all_bookmarks.append(bookmark)
+                folder_structure.setdefault(folder_path, []).append(bookmark)
+    
+    return folder_structure, all_bookmarks
+
+
+def create_html_from_ai_structure(folder_structure: Dict, original_bookmarks: List[Dict], output_path: str) -> None:
+    """Create HTML bookmark file from AI-organized structure"""
+    # Create URL lookup from original bookmarks
+    bookmark_lookup = {b['formatted_label']: b for b in original_bookmarks}
+    
+    html_content = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
+<!-- This is an automatically generated file. -->
+<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">
+<TITLE>Bookmarks</TITLE>
+<H1>Bookmarks</H1>
+<DL><p>
+"""
+    
+    def generate_folder_html(folder_path: str, indent_level: int = 1) -> str:
+        indent = "    " * indent_level
+        folder_html = ""
+        
+        # Get items in this folder
+        items = folder_structure.get(folder_path, [])
+        if not items:
+            return ""
+        
+        # Group items by type
+        folders = []
+        bookmarks = []
+        
+        for item in items:
+            if isinstance(item, dict) and 'url' in item:
+                bookmarks.append(item)
+            else:
+                # This is a subfolder reference
+                subfolders = [key for key in folder_structure.keys() if key.startswith(f"{folder_path}/") and key.count('/') == folder_path.count('/') + 1]
+                for subfolder in subfolders:
+                    folder_name = subfolder.split('/')[-1]
+                    if folder_name not in folders:
+                        folders.append(subfolder)
+        
+        # Generate bookmarks first
+        for bookmark in bookmarks:
+            original = bookmark_lookup.get(bookmark['formatted_label'])
+            if original:
+                folder_html += f'{indent}<DT><A HREF="{original["url"]}"'
+                if original.get('add_date'):
+                    folder_html += f' ADD_DATE="{original["add_date"]}"'
+                if original.get('icon'):
+                    folder_html += f' ICON="{original["icon"]}"'
+                folder_html += f'>{bookmark["formatted_label"]}</A>\n'
+        
+        # Generate subfolders
+        for subfolder_path in folders:
+            if subfolder_path in folder_structure:
+                folder_name = subfolder_path.split('/')[-1]
+                folder_html += f'{indent}<DT><H3>{folder_name}</H3>\n'
+                folder_html += f'{indent}<DD><DL><p>\n'
+                folder_html += generate_folder_html(subfolder_path, indent_level + 1)
+                folder_html += f'{indent}</DL><p>\n'
+        
+        return folder_html
+    
+    # Generate root level and all folders
+    for folder_path in sorted(folder_structure.keys()):
+        if '/' not in folder_path and folder_path != 'root':
+            # This is a top-level folder
+            folder_name = folder_path
+            html_content += f'    <DT><H3>{folder_name}</H3>\n'
+            html_content += f'    <DD><DL><p>\n'
+            html_content += generate_folder_html(folder_path, 2)
+            html_content += f'    </DL><p>\n'
+    
+    # Add root level bookmarks
+    if 'root' in folder_structure:
+        root_items = folder_structure['root']
+        for item in root_items:
+            if isinstance(item, dict) and 'formatted_label' in item:
+                original = bookmark_lookup.get(item['formatted_label'])
+                if original:
+                    html_content += f'    <DT><A HREF="{original["url"]}"'
+                    if original.get('add_date'):
+                        html_content += f' ADD_DATE="{original["add_date"]}"'
+                    if original.get('icon'):
+                        html_content += f' ICON="{original["icon"]}"'
+                    html_content += f'>{item["formatted_label"]}</A>\n'
+    
+    html_content += "</DL><p>"
+    
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(html_content)
+
+
+def handle_export_workflow(bookmarks: List[Dict[str, Union[str, bool, int, None]]], 
+                          original_file: str, args: argparse.Namespace) -> None:
+    """Handle the export workflow based on selected format"""
+    print("\n🤖 AI-Powered Bookmark Organization")
+    print("=" * 50)
+    
+    export_options = [
+        "1. Preserve original folder structure",
+        "2. Flatten all bookmarks (no folders)", 
+        "3. Prepare for AI organization (with instructions)"
+    ]
+    
+    print("Choose export format:")
+    for option in export_options:
+        print(f"  {option}")
+    
+    choice = input("\nEnter choice (1-3): ").strip()
+    
+    if choice == "1":
+        content = export_bookmarks_preserve_structure(original_file, bookmarks)
+        filename = "bookmarks_structured.txt"
+    elif choice == "2":
+        content = export_bookmarks_flattened(bookmarks)
+        filename = "bookmarks_flattened.txt"
+    elif choice == "3":
+        content = export_bookmarks_for_ai(bookmarks)
+        filename = "bookmarks_for_ai.txt"
+    else:
+        print("❌ Invalid choice")
+        return
+    
+    # Save to file
+    output_path = os.path.join(args.output_dir, filename)
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(content)
+    
+    print(f"\n✅ Exported to: {output_path}")
+    
+    # Offer clipboard option
+    try:
+        copy_choice = input("\n📋 Copy to clipboard for easy AI sharing? (y/n): ").strip().lower()
+        if copy_choice.startswith('y'):
+            pyperclip.copy(content)
+            print("✅ Content copied to clipboard!")
+    except ImportError:
+        print("ℹ️  pyperclip not available for clipboard functionality")
+    except Exception as e:
+        print(f"⚠️  Clipboard copy failed: {e}")
+    
+    if choice == "3":
+        print("\n🔄 Next Steps:")
+        print("1. Share the content with an AI (Claude, ChatGPT, etc.)")
+        print("2. Ask the AI to organize your bookmarks")
+        print("3. Copy the AI's organized response")
+        print("4. Use --import-ai flag to create new bookmark file")
+        print("\nExample AI prompt:")
+        print("'Please organize these bookmarks into logical folders following the format provided.'")
+
+
+def handle_ai_import(args: argparse.Namespace) -> None:
+    """Handle importing AI-organized bookmarks"""
+    print("\n📥 Import AI-Organized Bookmarks")
+    print("=" * 40)
+    
+    # Get AI content
+    ai_file = input("Enter path to AI-organized file (or press Enter to paste): ").strip()
+    
+    if ai_file:
+        if not os.path.exists(ai_file):
+            print(f"❌ File not found: {ai_file}")
+            return
+        with open(ai_file, 'r', encoding='utf-8') as f:
+            ai_content = f.read()
+    else:
+        print("📋 Paste the AI-organized content (press Ctrl+D when done):")
+        lines = []
+        try:
+            while True:
+                line = input()
+                lines.append(line)
+        except EOFError:
+            ai_content = '\n'.join(lines)
+    
+    if not ai_content.strip():
+        print("❌ No content provided")
+        return
+    
+    try:
+        # Parse AI content
+        folder_structure, organized_bookmarks = import_ai_organized_bookmarks(ai_content)
+        
+        print(f"\n✅ Parsed {len(organized_bookmarks)} bookmarks into {len(folder_structure)} folders")
+        
+        # Load original bookmarks for metadata
+        original_file = input("Enter path to original bookmarks file: ").strip()
+        if not os.path.exists(original_file):
+            print(f"❌ Original file not found: {original_file}")
+            return
+            
+        original_bookmarks = extract_all_bookmarks(original_file)
+        
+        # Create new HTML file
+        output_path = os.path.join(args.output_dir, "ai_organized_bookmarks.html")
+        create_html_from_ai_structure(folder_structure, original_bookmarks, output_path)
+        
+        print(f"🎉 Created organized bookmark file: {output_path}")
+        print("You can now import this file into your browser!")
+        
+    except Exception as e:
+        logging.error(f"Failed to import AI content: {e}")
+        print(f"❌ Failed to parse AI content: {e}")
+
+
 def parse_arguments() -> argparse.Namespace:
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(
-        description='Clean browser bookmarks while preserving folder structure',
+        description='Clean browser bookmarks and organize them with AI assistance',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
+  # Basic cleaning
   python bookmark_cleaner.py bookmarks.html
-  python bookmark_cleaner.py bookmarks.html --output-dir ./cleaned
-  python bookmark_cleaner.py bookmarks.html --validate --concurrent
-  python bookmark_cleaner.py bookmarks.html --max-workers 10 --timeout 15
+  
+  # Clean and export for AI organization
+  python bookmark_cleaner.py bookmarks.html --ai-export
+  
+  # Import AI-organized bookmarks
+  python bookmark_cleaner.py --import-ai
+  
+  # Advanced options
+  python bookmark_cleaner.py bookmarks.html --validate --concurrent --max-workers 10
         '''
     )
     
@@ -366,6 +830,14 @@ Examples:
                        help='Path to bookmarks HTML file')
     parser.add_argument('--output-dir', default=DEFAULT_CONFIG['output_dir'],
                        help=f'Output directory (default: {DEFAULT_CONFIG["output_dir"]})')
+    
+    # AI-powered organization options
+    parser.add_argument('--ai-export', action='store_true',
+                       help='Export bookmarks for AI organization (interactive menu)')
+    parser.add_argument('--import-ai', action='store_true',
+                       help='Import AI-organized bookmarks from file or clipboard')
+    
+    # URL validation options  
     parser.add_argument('--validate', action='store_true',
                        help='Validate all URLs (skip interactive prompt)')
     parser.add_argument('--no-validate', action='store_true',
@@ -376,10 +848,92 @@ Examples:
                        help=f'Number of concurrent workers (default: {DEFAULT_CONFIG["max_workers"]})')
     parser.add_argument('--timeout', type=int, default=DEFAULT_CONFIG['timeout'],
                        help=f'Request timeout in seconds (default: {DEFAULT_CONFIG["timeout"]})')
+    
+    # General options
     parser.add_argument('--verbose', '-v', action='store_true',
                        help='Enable verbose logging')
+    parser.add_argument('--no-backup', action='store_true',
+                       help='Skip creating backup (not recommended)')
+    parser.add_argument('--backup-dir', type=str,
+                       help='Custom directory for backup files')
     
     return parser.parse_args()
+
+
+def create_backup(file_path: str, custom_location: Optional[str] = None) -> str:
+    """Create a backup of the bookmark file before processing
+    
+    Args:
+        file_path: Path to the original bookmark file
+        custom_location: Optional custom backup directory
+        
+    Returns:
+        Path to the backup file
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    original_name = Path(file_path).stem
+    backup_name = f"{original_name}_backup_{timestamp}.html"
+    
+    if custom_location:
+        # Use custom location
+        backup_dir = Path(custom_location)
+        if not backup_dir.exists():
+            backup_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        # Use same directory as original file
+        backup_dir = Path(file_path).parent
+    
+    backup_path = backup_dir / backup_name
+    
+    try:
+        shutil.copy2(file_path, backup_path)
+        print(f"\n💾 Backup created successfully!")
+        print(f"   Location: {backup_path}")
+        print(f"   Size: {os.path.getsize(backup_path):,} bytes")
+        return str(backup_path)
+    except Exception as e:
+        print(f"⚠️  Warning: Could not create backup: {e}")
+        response = input("Continue without backup? (y/n): ").strip().lower()
+        if not response.startswith('y'):
+            print("❌ Operation cancelled.")
+            sys.exit(1)
+        return None
+
+
+def prompt_for_backup(file_path: str) -> str:
+    """Prompt user for backup options
+    
+    Args:
+        file_path: Path to the original bookmark file
+        
+    Returns:
+        Path to the backup file
+    """
+    print("\n📂 Backup Options:")
+    print("1. Save backup in same directory as bookmark file (default)")
+    print("2. Choose custom backup location")
+    print("3. Skip backup (not recommended)")
+    
+    choice = input("\nEnter choice (1-3) or press Enter for default: ").strip() or "1"
+    
+    if choice == "1" or choice == "":
+        return create_backup(file_path)
+    elif choice == "2":
+        custom_location = input("Enter backup directory path: ").strip()
+        if not custom_location:
+            print("Using same directory as bookmark file.")
+            return create_backup(file_path)
+        return create_backup(file_path, custom_location)
+    elif choice == "3":
+        response = input("⚠️  Are you sure you want to proceed without backup? (y/n): ").strip().lower()
+        if response.startswith('y'):
+            return None
+        else:
+            print("Creating backup in same directory...")
+            return create_backup(file_path)
+    else:
+        print("Invalid choice. Using default option...")
+        return create_backup(file_path)
 
 
 def process_bookmarks(file_path: str) -> List[Dict[str, Union[str, bool, int, None]]]:
@@ -502,7 +1056,15 @@ def main() -> int:
             logging.getLogger().setLevel(logging.DEBUG)
         setup_logging()
         
-        # Get input file path
+        # Create output directory
+        os.makedirs(args.output_dir, exist_ok=True)
+        
+        # Handle AI import workflow (doesn't need input file)
+        if args.import_ai:
+            handle_ai_import(args)
+            return 0
+        
+        # Get input file path for all other operations
         file_path = args.input_file
         if not file_path:
             file_path = input("📁 Enter path to bookmarks HTML file: ").strip()
@@ -523,15 +1085,41 @@ def main() -> int:
         
         logging.info(f"Processing bookmarks from: {file_path}")
         
+        # Create backup before processing
+        if args.no_backup:
+            print("⚠️  Proceeding without backup (--no-backup flag)")
+            backup_path = None
+        elif args.backup_dir:
+            # Use specified backup directory
+            backup_path = create_backup(file_path, args.backup_dir)
+            if backup_path:
+                print(f"✅ Backup saved. You can restore from: {backup_path}\n")
+        else:
+            # Interactive backup prompt
+            backup_path = prompt_for_backup(file_path)
+            if backup_path:
+                print(f"✅ Backup saved. You can restore from: {backup_path}\n")
+        
         # Process bookmarks
         bookmarks = process_bookmarks(file_path)
         show_cleaning_examples(bookmarks)
         
-        # Handle validation
+        # Handle AI export workflow
+        if args.ai_export:
+            handle_export_workflow(bookmarks, file_path, args)
+            return 0
+        
+        # Handle validation (for normal workflow)
         bookmarks = handle_validation(bookmarks, args)
         
-        # Generate outputs
+        # Generate standard outputs
         generate_outputs(file_path, bookmarks, args.output_dir)
+        
+        # Offer AI organization option
+        print("\n🤖 AI Organization Available!")
+        ai_choice = input("Would you like to export for AI organization? (y/n): ").strip().lower()
+        if ai_choice.startswith('y'):
+            handle_export_workflow(bookmarks, file_path, args)
         
         print("\n🎉 Done! Bookmarks cleaned while preserving original folder structure!")
         return 0
