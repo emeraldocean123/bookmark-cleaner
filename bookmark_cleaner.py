@@ -78,7 +78,9 @@ DEFAULT_CONFIG = {
     'max_workers': 5,
     'title_max_length': 40,
     'validation_delay': 0.1,
-    'output_dir': 'output'
+    'output_dir': 'bookmarks-processed',
+    'input_dir': 'bookmarks-input',
+    'backup_dir': 'bookmarks-backups'
 }
 
 
@@ -757,7 +759,8 @@ def create_html_from_ai_structure(folder_structure: Dict, original_bookmarks: Li
 
 
 def handle_export_workflow(bookmarks: List[Dict[str, Union[str, bool, int, None]]], 
-                          original_file: str, args: argparse.Namespace) -> None:
+                          original_file: str, args: argparse.Namespace, 
+                          job_folder: Optional[str] = None) -> None:
     """Handle the export workflow based on selected format"""
     print("\n🤖 AI-Powered Bookmark Organization")
     print("=" * 50)
@@ -787,8 +790,17 @@ def handle_export_workflow(bookmarks: List[Dict[str, Union[str, bool, int, None]
         print("❌ Invalid choice")
         return
     
-    # Save to file
-    output_path = os.path.join(args.output_dir, filename)
+    # Create job folder if not provided
+    if not job_folder:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        original_name = Path(original_file).stem
+        job_folder = f"job_{timestamp}_{original_name}"
+    
+    # Save to AI export directory with job folder
+    export_dir = os.path.join(args.output_dir, "ai-export", job_folder)
+    os.makedirs(export_dir, exist_ok=True)
+    
+    output_path = os.path.join(export_dir, filename)
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(content)
     
@@ -863,8 +875,15 @@ def handle_ai_import(args: argparse.Namespace) -> None:
             
         original_bookmarks = extract_all_bookmarks(original_file)
         
-        # Create new HTML file
-        output_path = os.path.join(args.output_dir, "ai_organized_bookmarks.html")
+        # Create timestamped job folder for AI organized output
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        original_name = Path(original_file).stem
+        job_folder = f"job_{timestamp}_{original_name}_ai_organized"
+        
+        ai_organized_dir = os.path.join(args.output_dir, "ai-organized", job_folder)
+        os.makedirs(ai_organized_dir, exist_ok=True)
+        
+        output_path = os.path.join(ai_organized_dir, f"{original_name}_ai_organized.html")
         create_html_from_ai_structure(folder_structure, original_bookmarks, output_path)
         
         print(f"🎉 Created organized bookmark file: {output_path}")
@@ -950,8 +969,10 @@ def create_backup(file_path: str, custom_location: Optional[str] = None) -> str:
         if not backup_dir.exists():
             backup_dir.mkdir(parents=True, exist_ok=True)
     else:
-        # Use same directory as original file
-        backup_dir = Path(file_path).parent
+        # Use default backup directory
+        backup_dir = Path(DEFAULT_CONFIG['backup_dir'])
+        if not backup_dir.exists():
+            backup_dir.mkdir(parents=True, exist_ok=True)
     
     backup_path = backup_dir / backup_name
     
@@ -1075,22 +1096,37 @@ def print_validation_summary(bookmarks: List[Dict[str, Union[str, bool, int, Non
 
 
 def generate_outputs(file_path: str, bookmarks: List[Dict[str, Union[str, bool, int, None]]], 
-                     output_dir: str) -> None:
-    """Generate HTML and JSON output files"""
-    print(f"\n💾 Generating outputs in '{output_dir}' directory...")
+                     output_dir: str) -> str:
+    """Generate HTML and JSON output files in timestamped job folder
     
-    # Create output directory if it doesn't exist
-    os.makedirs(output_dir, exist_ok=True)
+    Returns:
+        Path to the job folder for this processing run
+    """
+    # Create timestamped job folder
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    original_name = Path(file_path).stem
+    job_folder = f"job_{timestamp}_{original_name}"
+    
+    # Create subdirectories for this job
+    cleaned_dir = os.path.join(output_dir, "cleaned", job_folder)
+    reports_dir = os.path.join(output_dir, "reports", job_folder)
+    
+    os.makedirs(cleaned_dir, exist_ok=True)
+    os.makedirs(reports_dir, exist_ok=True)
+    
+    print(f"\n💾 Generating outputs for job: {job_folder}")
     
     # Generate HTML with original structure but clean labels
     html_output = create_html_with_clean_labels(file_path, bookmarks)
-    output_html_path = os.path.join(output_dir, 'clean_bookmarks.html')
+    output_html_path = os.path.join(cleaned_dir, f'{original_name}_cleaned.html')
     with open(output_html_path, 'w', encoding='utf-8') as f:
         f.write(html_output)
     
     # Generate JSON report
     json_report = {
         "generation_date": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "source_file": file_path,
+        "job_id": job_folder,
         "summary": {
             "total_bookmarks": len(bookmarks),
             "original_structure_preserved": True,
@@ -1110,13 +1146,15 @@ def generate_outputs(file_path: str, bookmarks: List[Dict[str, Union[str, bool, 
         ]
     }
     
-    output_json_path = os.path.join(output_dir, 'bookmarks_report.json')
+    output_json_path = os.path.join(reports_dir, f'{original_name}_report.json')
     with open(output_json_path, 'w', encoding='utf-8') as f:
         json.dump(json_report, f, indent=2)
     
     print("✅ Files generated:")
-    print(f"  📄 {output_html_path} - Original structure with clean labels")
-    print(f"  📊 {output_json_path} - Detailed report")
+    print(f"  📄 {output_html_path}")
+    print(f"  📊 {output_json_path}")
+    
+    return job_folder
 
 
 def main() -> int:
@@ -1188,14 +1226,14 @@ def main() -> int:
         # Handle validation (for normal workflow)
         bookmarks = handle_validation(bookmarks, args)
         
-        # Generate standard outputs
-        generate_outputs(file_path, bookmarks, args.output_dir)
+        # Generate standard outputs and get job folder
+        job_folder = generate_outputs(file_path, bookmarks, args.output_dir)
         
         # Offer AI organization option
         print("\n🤖 AI Organization Available!")
         ai_choice = input("Would you like to export for AI organization? (y/n): ").strip().lower()
         if ai_choice.startswith('y'):
-            handle_export_workflow(bookmarks, file_path, args)
+            handle_export_workflow(bookmarks, file_path, args, job_folder)
         
         print("\n🎉 Done! Bookmarks cleaned while preserving original folder structure!")
         return 0
