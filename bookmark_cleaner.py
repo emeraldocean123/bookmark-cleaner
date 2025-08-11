@@ -618,7 +618,9 @@ def create_html_from_ai_structure(folder_structure: Dict, original_bookmarks: Li
             domain_lookup[domain] = []
         domain_lookup[domain].append(b)
     
-    html_content = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
+    # Create Edge-compatible structure with Favorites bar
+    favorites_timestamp = str(int(time.time()))
+    html_content = f"""<!DOCTYPE NETSCAPE-Bookmark-file-1>
 <!-- This is an automatically generated file.
      It will be read and overwritten.
      DO NOT EDIT! -->
@@ -626,6 +628,8 @@ def create_html_from_ai_structure(folder_structure: Dict, original_bookmarks: Li
 <TITLE>Bookmarks</TITLE>
 <H1>Bookmarks</H1>
 <DL><p>
+    <DT><H3 ADD_DATE="{favorites_timestamp}" LAST_MODIFIED="0" PERSONAL_TOOLBAR_FOLDER="true">Favorites bar</H3>
+    <DL><p>
 """
     
     def generate_folder_html(folder_path: str, indent_level: int = 1) -> str:
@@ -706,15 +710,16 @@ def create_html_from_ai_structure(folder_structure: Dict, original_bookmarks: Li
         return folder_html
     
     # Generate root level and all folders with proper Edge structure
+    # Now nested under Favorites bar, so use 2 levels of indentation
     for folder_path in sorted(folder_structure.keys()):
         if '/' not in folder_path and folder_path != 'root':
-            # This is a top-level folder
+            # This is a top-level folder under Favorites bar
             folder_name = folder_path
             timestamp = str(int(time.time()))
-            html_content += f'    <DT><H3 ADD_DATE="{timestamp}" LAST_MODIFIED="{timestamp}">{folder_name}</H3>\n'
-            html_content += f'    <DL><p>\n'
-            html_content += generate_folder_html(folder_path, 2)
-            html_content += f'    </DL><p>\n'
+            html_content += f'        <DT><H3 ADD_DATE="{timestamp}" LAST_MODIFIED="{timestamp}">{folder_name}</H3>\n'
+            html_content += f'        <DL><p>\n'
+            html_content += generate_folder_html(folder_path, 3)
+            html_content += f'        </DL><p>\n'
     
     # Add root level bookmarks
     if 'root' in folder_structure:
@@ -742,7 +747,7 @@ def create_html_from_ai_structure(folder_structure: Dict, original_bookmarks: Li
                                 original = candidates[0]
                 
                 if original:
-                    html_content += f'    <DT><A HREF="{original["url"]}"'
+                    html_content += f'        <DT><A HREF="{original["url"]}"'
                     if original.get('add_date'):
                         html_content += f' ADD_DATE="{original["add_date"]}"'
                     if original.get('icon'):
@@ -755,9 +760,11 @@ def create_html_from_ai_structure(folder_structure: Dict, original_bookmarks: Li
                         url = f'https://{domain}'
                     else:
                         url = domain
-                    html_content += f'    <DT><A HREF="{url}">{item["formatted_label"]}</A>\n'
+                    html_content += f'        <DT><A HREF="{url}">{item["formatted_label"]}</A>\n'
     
-    html_content += "</DL><p>"
+    # Close the Favorites bar structure
+    html_content += "    </DL><p>\n"  # Close Favorites bar content
+    html_content += "</DL><p>"         # Close main DL
     
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(html_content)

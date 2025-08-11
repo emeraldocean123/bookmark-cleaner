@@ -21,19 +21,22 @@ def create_edge_test_bookmark():
 <TITLE>Bookmarks</TITLE>
 <H1>Bookmarks</H1>
 <DL><p>
-    <DT><H3 ADD_DATE="{timestamp}" LAST_MODIFIED="{timestamp}">Test Folder</H3>
+    <DT><H3 ADD_DATE="{timestamp}" LAST_MODIFIED="0" PERSONAL_TOOLBAR_FOLDER="true">Favorites bar</H3>
     <DL><p>
-        <DT><A HREF="https://github.com">github.com | GitHub</A>
-        <DT><A HREF="https://google.com">google.com | Google</A>
-        <DT><H3 ADD_DATE="{timestamp}" LAST_MODIFIED="{timestamp}">Subfolder</H3>
+        <DT><H3 ADD_DATE="{timestamp}" LAST_MODIFIED="{timestamp}">Test Folder</H3>
         <DL><p>
-            <DT><A HREF="https://stackoverflow.com">stackoverflow.com | Stack Overflow</A>
+            <DT><A HREF="https://github.com">github.com | GitHub</A>
+            <DT><A HREF="https://google.com">google.com | Google</A>
+            <DT><H3 ADD_DATE="{timestamp}" LAST_MODIFIED="{timestamp}">Subfolder</H3>
+            <DL><p>
+                <DT><A HREF="https://stackoverflow.com">stackoverflow.com | Stack Overflow</A>
+            </DL><p>
         </DL><p>
-    </DL><p>
-    <DT><H3 ADD_DATE="{timestamp}" LAST_MODIFIED="{timestamp}">Another Folder</H3>
-    <DL><p>
-        <DT><A HREF="https://youtube.com">youtube.com | YouTube</A>
-        <DT><A HREF="https://netflix.com">netflix.com | Netflix</A>
+        <DT><H3 ADD_DATE="{timestamp}" LAST_MODIFIED="{timestamp}">Another Folder</H3>
+        <DL><p>
+            <DT><A HREF="https://youtube.com">youtube.com | YouTube</A>
+            <DT><A HREF="https://netflix.com">netflix.com | Netflix</A>
+        </DL><p>
     </DL><p>
 </DL><p>"""
     
