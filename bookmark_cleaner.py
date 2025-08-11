@@ -619,7 +619,9 @@ def create_html_from_ai_structure(folder_structure: Dict, original_bookmarks: Li
         domain_lookup[domain].append(b)
     
     html_content = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
-<!-- This is an automatically generated file. -->
+<!-- This is an automatically generated file.
+     It will be read and overwritten.
+     DO NOT EDIT! -->
 <META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">
 <TITLE>Bookmarks</TITLE>
 <H1>Bookmarks</H1>
@@ -690,24 +692,27 @@ def create_html_from_ai_structure(folder_structure: Dict, original_bookmarks: Li
                     url = domain
                 folder_html += f'{indent}<DT><A HREF="{url}">{bookmark["formatted_label"]}</A>\n'
         
-        # Generate subfolders
+        # Generate subfolders with proper Edge format
         for subfolder_path in folders:
             if subfolder_path in folder_structure:
                 folder_name = subfolder_path.split('/')[-1]
-                folder_html += f'{indent}<DT><H3>{folder_name}</H3>\n'
-                folder_html += f'{indent}<DD><DL><p>\n'
+                # Add timestamps for Edge compatibility
+                timestamp = str(int(time.time()))
+                folder_html += f'{indent}<DT><H3 ADD_DATE="{timestamp}" LAST_MODIFIED="{timestamp}">{folder_name}</H3>\n'
+                folder_html += f'{indent}<DL><p>\n'
                 folder_html += generate_folder_html(subfolder_path, indent_level + 1)
                 folder_html += f'{indent}</DL><p>\n'
         
         return folder_html
     
-    # Generate root level and all folders
+    # Generate root level and all folders with proper Edge structure
     for folder_path in sorted(folder_structure.keys()):
         if '/' not in folder_path and folder_path != 'root':
             # This is a top-level folder
             folder_name = folder_path
-            html_content += f'    <DT><H3>{folder_name}</H3>\n'
-            html_content += f'    <DD><DL><p>\n'
+            timestamp = str(int(time.time()))
+            html_content += f'    <DT><H3 ADD_DATE="{timestamp}" LAST_MODIFIED="{timestamp}">{folder_name}</H3>\n'
+            html_content += f'    <DL><p>\n'
             html_content += generate_folder_html(folder_path, 2)
             html_content += f'    </DL><p>\n'
     
