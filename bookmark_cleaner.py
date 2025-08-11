@@ -16,9 +16,36 @@ from urllib.parse import urlparse
 import re
 import time
 import os
+import argparse
+import sys
+import logging
+from typing import Dict, List, Optional, Union
+import concurrent.futures
 
 
-def extract_domain(url):
+# Configuration defaults
+DEFAULT_CONFIG = {
+    'timeout': 10,
+    'max_workers': 5,
+    'title_max_length': 40,
+    'validation_delay': 0.1,
+    'output_dir': 'output'
+}
+
+
+def setup_logging() -> None:
+    """Setup logging configuration"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('bookmark_cleaner.log'),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+
+
+def extract_domain(url: str) -> str:
     """Extract clean domain name from URL in consistent format"""
     try:
         parsed = urlparse(url)
@@ -32,7 +59,7 @@ def extract_domain(url):
         return "unknown.com"
 
 
-def clean_title(title):
+def clean_title(title: str, max_length: int = DEFAULT_CONFIG['title_max_length']) -> str:
     """Clean up bookmark title by removing common suffixes and junk"""
     if not title:
         return "Untitled"
@@ -74,13 +101,13 @@ def clean_title(title):
     cleaned = re.sub(r'[.,;:]+$', '', cleaned)
 
     # Limit length to keep it simple
-    if len(cleaned) > 40:
-        cleaned = cleaned[:37] + "..."
+    if len(cleaned) > max_length:
+        cleaned = cleaned[:max_length-3] + "..."
 
     return cleaned or "Untitled"
 
 
-def extract_all_bookmarks(file_path):
+def extract_all_bookmarks(file_path: str) -> List[Dict[str, Union[str, bool, int, None]]]:
     """Extract all bookmarks from HTML file"""
     with open(file_path, 'r', encoding='utf-8') as file:
         content = file.read()
@@ -238,7 +265,9 @@ def create_html_with_clean_labels(original_file, bookmarks):
     return str(soup)
 
 
-def validate_bookmark(bookmark, session, timeout=10):
+def validate_bookmark(bookmark: Dict[str, Union[str, bool, int, None]], 
+                      session: requests.Session, 
+                      timeout: int = DEFAULT_CONFIG['timeout']) -> Dict[str, Union[str, bool, int, None]]:
     """Validate a single bookmark"""
     try:
         response = session.head(bookmark['url'], timeout=timeout,
@@ -259,15 +288,53 @@ def validate_bookmark(bookmark, session, timeout=10):
             return bookmark
 
 
-def validate_bookmarks(bookmarks, max_workers=5):
-    """Validate all bookmarks"""
+def validate_bookmarks_concurrent(bookmarks: List[Dict[str, Union[str, bool, int, None]]], 
+                                  max_workers: int = DEFAULT_CONFIG['max_workers']) -> List[Dict[str, Union[str, bool, int, None]]]:
+    """Validate all bookmarks concurrently for better performance"""
     session = requests.Session()
     user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     session.headers.update({
         'User-Agent': user_agent
     })
 
-    print(f"Validating {len(bookmarks)} bookmarks...")
+    print(f"🔍 Validating {len(bookmarks)} bookmarks using {max_workers} concurrent workers...")
+
+    validated = []
+    completed_count = 0
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all bookmark validation tasks
+        future_to_bookmark = {
+            executor.submit(validate_bookmark, bookmark.copy(), session): bookmark 
+            for bookmark in bookmarks
+        }
+        
+        # Process completed tasks
+        for future in concurrent.futures.as_completed(future_to_bookmark):
+            validated_bookmark = future.result()
+            validated.append(validated_bookmark)
+            completed_count += 1
+            
+            status = "✓" if validated_bookmark['is_valid'] else "✗"
+            label = validated_bookmark['formatted_label'][:50]
+            print(f"[{completed_count}/{len(bookmarks)}] {status} {label}...")
+            
+            # Small delay to be respectful to servers
+            time.sleep(DEFAULT_CONFIG['validation_delay'])
+
+    return validated
+
+
+def validate_bookmarks_sequential(bookmarks: List[Dict[str, Union[str, bool, int, None]]], 
+                                  max_workers: int = DEFAULT_CONFIG['max_workers']) -> List[Dict[str, Union[str, bool, int, None]]]:
+    """Validate all bookmarks sequentially (legacy method)"""
+    session = requests.Session()
+    user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    session.headers.update({
+        'User-Agent': user_agent
+    })
+
+    print(f"🔍 Validating {len(bookmarks)} bookmarks sequentially...")
 
     validated = []
     for i, bookmark in enumerate(bookmarks):
@@ -276,70 +343,125 @@ def validate_bookmarks(bookmarks, max_workers=5):
         status = "✓" if validated_bookmark['is_valid'] else "✗"
         label = bookmark['formatted_label'][:50]
         print(f"[{i+1}/{len(bookmarks)}] {status} {label}...")
-        time.sleep(0.1)  # Be nice to servers
+        time.sleep(DEFAULT_CONFIG['validation_delay'])  # Be nice to servers
 
     return validated
 
 
-def main():
-    file_path = r"C:\Users\emera\Downloads\favorites_7_5_25.html"
+def parse_arguments() -> argparse.Namespace:
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(
+        description='Clean browser bookmarks while preserving folder structure',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  python bookmark_cleaner.py bookmarks.html
+  python bookmark_cleaner.py bookmarks.html --output-dir ./cleaned
+  python bookmark_cleaner.py bookmarks.html --validate --concurrent
+  python bookmark_cleaner.py bookmarks.html --max-workers 10 --timeout 15
+        '''
+    )
+    
+    parser.add_argument('input_file', nargs='?', 
+                       help='Path to bookmarks HTML file')
+    parser.add_argument('--output-dir', default=DEFAULT_CONFIG['output_dir'],
+                       help=f'Output directory (default: {DEFAULT_CONFIG["output_dir"]})')
+    parser.add_argument('--validate', action='store_true',
+                       help='Validate all URLs (skip interactive prompt)')
+    parser.add_argument('--no-validate', action='store_true',
+                       help='Skip URL validation (skip interactive prompt)')
+    parser.add_argument('--concurrent', action='store_true',
+                       help='Use concurrent validation for better performance')
+    parser.add_argument('--max-workers', type=int, default=DEFAULT_CONFIG['max_workers'],
+                       help=f'Number of concurrent workers (default: {DEFAULT_CONFIG["max_workers"]})')
+    parser.add_argument('--timeout', type=int, default=DEFAULT_CONFIG['timeout'],
+                       help=f'Request timeout in seconds (default: {DEFAULT_CONFIG["timeout"]})')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                       help='Enable verbose logging')
+    
+    return parser.parse_args()
 
+
+def process_bookmarks(file_path: str) -> List[Dict[str, Union[str, bool, int, None]]]:
+    """Extract and clean bookmarks from HTML file"""
     print("🔄 Extracting bookmarks and cleaning labels...")
     bookmarks = extract_all_bookmarks(file_path)
     print(f"✓ Found {len(bookmarks)} bookmarks")
     print("✓ Cleaned labels and handled duplicates")
+    
+    return bookmarks
 
-    # Show some examples of cleaned labels
+
+def show_cleaning_examples(bookmarks: List[Dict[str, Union[str, bool, int, None]]], count: int = 5) -> None:
+    """Show examples of cleaned labels"""
     print("\n🏷️  Label Cleaning Examples:")
-    for i, bookmark in enumerate(bookmarks[:5]):
+    for i, bookmark in enumerate(bookmarks[:count]):
         print(f"  Original: {bookmark['original_title'][:60]}...")
         print(f"  Cleaned:  {bookmark['formatted_label']}")
         print()
 
-    # Validate bookmarks
-    response = input("🔍 Validate all URLs? This may take a while (y/n): ")
-    if response.lower().startswith('y'):
-        validated_bookmarks = validate_bookmarks(bookmarks)
-        bookmarks = validated_bookmarks
 
-        # Generate validation report
-        total = len(bookmarks)
-        valid = sum(1 for b in bookmarks if b.get('is_valid', False))
-        invalid = sum(1 for b in bookmarks if b.get('is_valid') is False)
+def handle_validation(bookmarks: List[Dict[str, Union[str, bool, int, None]]], 
+                      args: argparse.Namespace) -> List[Dict[str, Union[str, bool, int, None]]]:
+    """Handle bookmark validation based on arguments"""
+    should_validate = args.validate
+    
+    # Interactive prompt if not specified via arguments
+    if not args.validate and not args.no_validate:
+        response = input("🔍 Validate all URLs? This may take a while (y/n): ")
+        should_validate = response.lower().startswith('y')
+    
+    if should_validate:
+        validate_func = validate_bookmarks_concurrent if args.concurrent else validate_bookmarks_sequential
+        validated_bookmarks = validate_func(bookmarks, args.max_workers)
+        
+        print_validation_summary(validated_bookmarks)
+        return validated_bookmarks
+    
+    return bookmarks
 
-        print("\n📈 Validation Summary:")
-        print(f"  Total bookmarks: {total}")
-        print(f"  Valid bookmarks: {valid}")
-        print(f"  Invalid bookmarks: {invalid}")
-        if (valid + invalid) > 0:
-            success_rate = valid / (valid + invalid) * 100
-            print(f"  Success rate: {success_rate:.1f}%")
-        else:
-            print("  No validation performed")
 
-        # Show broken links
-        broken_links = [b for b in bookmarks if b.get('is_valid') is False]
-        if broken_links:
-            print(f"\n❌ Broken links ({len(broken_links)}):")
-            for link in broken_links[:10]:  # Show first 10
-                print(f"  - {link['formatted_label'][:60]}...")
-            if len(broken_links) > 10:
-                print(f"  ... and {len(broken_links) - 10} more")
+def print_validation_summary(bookmarks: List[Dict[str, Union[str, bool, int, None]]]) -> None:
+    """Print validation summary and broken links"""
+    total = len(bookmarks)
+    valid = sum(1 for b in bookmarks if b.get('is_valid', False))
+    invalid = sum(1 for b in bookmarks if b.get('is_valid') is False)
 
-    # Generate output with original structure but clean labels
-    print("\n💾 Generating HTML with original folders and clean labels...")
-    html_output = create_html_with_clean_labels(file_path, bookmarks)
+    print("\n📈 Validation Summary:")
+    print(f"  Total bookmarks: {total}")
+    print(f"  Valid bookmarks: {valid}")
+    print(f"  Invalid bookmarks: {invalid}")
+    if (valid + invalid) > 0:
+        success_rate = valid / (valid + invalid) * 100
+        print(f"  Success rate: {success_rate:.1f}%")
+    else:
+        print("  No validation performed")
 
+    # Show broken links
+    broken_links = [b for b in bookmarks if b.get('is_valid') is False]
+    if broken_links:
+        print(f"\n❌ Broken links ({len(broken_links)}):")
+        for link in broken_links[:10]:  # Show first 10
+            print(f"  - {link['formatted_label'][:60]}...")
+        if len(broken_links) > 10:
+            print(f"  ... and {len(broken_links) - 10} more")
+
+
+def generate_outputs(file_path: str, bookmarks: List[Dict[str, Union[str, bool, int, None]]], 
+                     output_dir: str) -> None:
+    """Generate HTML and JSON output files"""
+    print(f"\n💾 Generating outputs in '{output_dir}' directory...")
+    
     # Create output directory if it doesn't exist
-    output_dir = "output"
     os.makedirs(output_dir, exist_ok=True)
-
-    # Write files to output directory
+    
+    # Generate HTML with original structure but clean labels
+    html_output = create_html_with_clean_labels(file_path, bookmarks)
     output_html_path = os.path.join(output_dir, 'clean_bookmarks.html')
     with open(output_html_path, 'w', encoding='utf-8') as f:
         f.write(html_output)
-
-    print("💾 Generating detailed JSON report...")
+    
+    # Generate JSON report
     json_report = {
         "generation_date": time.strftime("%Y-%m-%d %H:%M:%S"),
         "summary": {
@@ -360,16 +482,70 @@ def main():
             } for b in bookmarks
         ]
     }
-
+    
     output_json_path = os.path.join(output_dir, 'bookmarks_report.json')
     with open(output_json_path, 'w', encoding='utf-8') as f:
         json.dump(json_report, f, indent=2)
-
+    
     print("✅ Files generated:")
     print(f"  📄 {output_html_path} - Original structure with clean labels")
     print(f"  📊 {output_json_path} - Detailed report")
-    print("\n🎉 Done! Bookmarks cleaned while preserving original folder "
-          "structure!")
+
+
+def main() -> int:
+    """Main function with improved error handling and argument parsing"""
+    try:
+        args = parse_arguments()
+        
+        # Setup logging
+        if args.verbose:
+            logging.getLogger().setLevel(logging.DEBUG)
+        setup_logging()
+        
+        # Get input file path
+        file_path = args.input_file
+        if not file_path:
+            file_path = input("📁 Enter path to bookmarks HTML file: ").strip()
+        
+        # Validate input file
+        if not file_path:
+            print("❌ Error: No input file specified")
+            return 1
+            
+        if not os.path.exists(file_path):
+            print(f"❌ Error: File not found: {file_path}")
+            return 1
+        
+        # Update global config with command line args
+        DEFAULT_CONFIG['timeout'] = args.timeout
+        DEFAULT_CONFIG['max_workers'] = args.max_workers
+        DEFAULT_CONFIG['output_dir'] = args.output_dir
+        
+        logging.info(f"Processing bookmarks from: {file_path}")
+        
+        # Process bookmarks
+        bookmarks = process_bookmarks(file_path)
+        show_cleaning_examples(bookmarks)
+        
+        # Handle validation
+        bookmarks = handle_validation(bookmarks, args)
+        
+        # Generate outputs
+        generate_outputs(file_path, bookmarks, args.output_dir)
+        
+        print("\n🎉 Done! Bookmarks cleaned while preserving original folder structure!")
+        return 0
+        
+    except KeyboardInterrupt:
+        print("\n❌ Operation cancelled by user")
+        return 1
+    except FileNotFoundError as e:
+        print(f"❌ Error: File not found - {e}")
+        return 1
+    except Exception as e:
+        logging.error(f"Unexpected error: {e}")
+        print(f"❌ Unexpected error occurred. Check bookmark_cleaner.log for details.")
+        return 1
 
 
 if __name__ == "__main__":

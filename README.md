@@ -12,6 +12,18 @@ A Python tool for cleaning browser bookmarks while preserving their original fol
 
 ## Installation
 
+### Option 1: Quick Setup (Windows)
+1. Install Python 3.7 or higher from [python.org](https://www.python.org/)
+2. Run the batch installer:
+   ```cmd
+   install_dependencies.bat
+   ```
+3. Test the setup:
+   ```cmd
+   python test_setup.py
+   ```
+
+### Option 2: Manual Setup
 1. Install Python 3.7 or higher
 2. Install required dependencies:
    ```bash
@@ -20,19 +32,43 @@ A Python tool for cleaning browser bookmarks while preserving their original fol
 
 ## Usage
 
-Run the script with your exported bookmarks file:
-
+### Basic Usage
 ```bash
+# Interactive mode - prompts for file path
 python bookmark_cleaner.py
+
+# Specify file directly  
+python bookmark_cleaner.py bookmarks.html
+
+# Custom output directory
+python bookmark_cleaner.py bookmarks.html --output-dir ./cleaned
 ```
 
-The script will:
-1. Parse your bookmarks from `C:\Users\emera\Downloads\favorites_7_5_25.html`
-2. Clean all bookmark labels to `domain.com | clean_title` format
-3. Handle duplicates intelligently with unique identifiers
-4. Preserve your original folder structure completely
-5. Optionally validate all URLs
-6. Generate clean output files
+### Advanced Options
+```bash
+# Validate URLs with concurrent processing (faster)
+python bookmark_cleaner.py bookmarks.html --validate --concurrent
+
+# Skip validation entirely
+python bookmark_cleaner.py bookmarks.html --no-validate
+
+# Configure performance
+python bookmark_cleaner.py bookmarks.html --max-workers 10 --timeout 15
+
+# Verbose logging
+python bookmark_cleaner.py bookmarks.html --verbose
+
+# Get help
+python bookmark_cleaner.py --help
+```
+
+### What the script does:
+1. **Parse** your exported bookmarks HTML file
+2. **Clean** all bookmark labels to `domain.com | clean_title` format  
+3. **Handle** duplicates intelligently with unique identifiers
+4. **Preserve** your original folder structure completely
+5. **Optionally validate** all URLs (concurrent or sequential)
+6. **Generate** clean output files in `output/` directory
 
 ## Label Cleaning Examples
 
