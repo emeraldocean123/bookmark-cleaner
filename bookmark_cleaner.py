@@ -605,8 +605,16 @@ def import_ai_organized_bookmarks(ai_content: str) -> Tuple[Dict, List[Dict]]:
 
 def create_html_from_ai_structure(folder_structure: Dict, original_bookmarks: List[Dict], output_path: str) -> None:
     """Create HTML bookmark file from AI-organized structure"""
-    # Create URL lookup from original bookmarks
+    # Create multiple lookup methods for better matching
     bookmark_lookup = {b['formatted_label']: b for b in original_bookmarks}
+    
+    # Also create lookups by domain for fallback matching
+    domain_lookup = {}
+    for b in original_bookmarks:
+        domain = b['domain']
+        if domain not in domain_lookup:
+            domain_lookup[domain] = []
+        domain_lookup[domain].append(b)
     
     html_content = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
 <!-- This is an automatically generated file. -->
@@ -630,26 +638,55 @@ def create_html_from_ai_structure(folder_structure: Dict, original_bookmarks: Li
         bookmarks = []
         
         for item in items:
-            if isinstance(item, dict) and 'url' in item:
+            if isinstance(item, dict) and 'formatted_label' in item:
                 bookmarks.append(item)
-            else:
-                # This is a subfolder reference
-                subfolders = [key for key in folder_structure.keys() if key.startswith(f"{folder_path}/") and key.count('/') == folder_path.count('/') + 1]
-                for subfolder in subfolders:
-                    folder_name = subfolder.split('/')[-1]
-                    if folder_name not in folders:
-                        folders.append(subfolder)
+        
+        # Find subfolders
+        subfolders = [key for key in folder_structure.keys() if key.startswith(f"{folder_path}/") and key.count('/') == folder_path.count('/') + 1]
+        for subfolder in subfolders:
+            if subfolder not in folders:
+                folders.append(subfolder)
         
         # Generate bookmarks first
         for bookmark in bookmarks:
             original = bookmark_lookup.get(bookmark['formatted_label'])
+            
+            # If exact match not found, try to find by domain
+            if not original and bookmark.get('domain'):
+                domain = bookmark['domain']
+                if domain in domain_lookup:
+                    # Try to find best match by comparing titles
+                    candidates = domain_lookup[domain]
+                    if len(candidates) == 1:
+                        original = candidates[0]
+                    else:
+                        # Try to match by partial title
+                        bookmark_title = bookmark.get('title', '').lower()
+                        for candidate in candidates:
+                            if bookmark_title in candidate.get('clean_title', '').lower() or \
+                               bookmark_title in candidate.get('original_title', '').lower():
+                                original = candidate
+                                break
+                        # If still no match, use first candidate
+                        if not original and candidates:
+                            original = candidates[0]
+            
             if original:
                 folder_html += f'{indent}<DT><A HREF="{original["url"]}"'
                 if original.get('add_date'):
                     folder_html += f' ADD_DATE="{original["add_date"]}"'
                 if original.get('icon'):
                     folder_html += f' ICON="{original["icon"]}"'
+                # Use the AI's label to preserve any edits made
                 folder_html += f'>{bookmark["formatted_label"]}</A>\n'
+            else:
+                # If no original found, create a basic bookmark with just the domain as URL
+                domain = bookmark.get('domain', 'unknown.com')
+                if not domain.startswith('http'):
+                    url = f'https://{domain}'
+                else:
+                    url = domain
+                folder_html += f'{indent}<DT><A HREF="{url}">{bookmark["formatted_label"]}</A>\n'
         
         # Generate subfolders
         for subfolder_path in folders:
@@ -678,6 +715,25 @@ def create_html_from_ai_structure(folder_structure: Dict, original_bookmarks: Li
         for item in root_items:
             if isinstance(item, dict) and 'formatted_label' in item:
                 original = bookmark_lookup.get(item['formatted_label'])
+                
+                # If exact match not found, try to find by domain
+                if not original and item.get('domain'):
+                    domain = item['domain']
+                    if domain in domain_lookup:
+                        candidates = domain_lookup[domain]
+                        if len(candidates) == 1:
+                            original = candidates[0]
+                        else:
+                            # Try to match by partial title
+                            item_title = item.get('title', '').lower()
+                            for candidate in candidates:
+                                if item_title in candidate.get('clean_title', '').lower() or \
+                                   item_title in candidate.get('original_title', '').lower():
+                                    original = candidate
+                                    break
+                            if not original and candidates:
+                                original = candidates[0]
+                
                 if original:
                     html_content += f'    <DT><A HREF="{original["url"]}"'
                     if original.get('add_date'):
@@ -685,6 +741,14 @@ def create_html_from_ai_structure(folder_structure: Dict, original_bookmarks: Li
                     if original.get('icon'):
                         html_content += f' ICON="{original["icon"]}"'
                     html_content += f'>{item["formatted_label"]}</A>\n'
+                else:
+                    # Create basic bookmark with domain as URL
+                    domain = item.get('domain', 'unknown.com')
+                    if not domain.startswith('http'):
+                        url = f'https://{domain}'
+                    else:
+                        url = domain
+                    html_content += f'    <DT><A HREF="{url}">{item["formatted_label"]}</A>\n'
     
     html_content += "</DL><p>"
     
