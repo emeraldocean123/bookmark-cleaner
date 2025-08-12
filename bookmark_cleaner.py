@@ -290,25 +290,60 @@ def extract_all_bookmarks(file_path: str) -> List[Dict[str, Union[str, bool, int
 
 
 def create_html_with_clean_labels(original_file, bookmarks):
-    """Create HTML maintaining original structure but with cleaned labels"""
+    """Create HTML maintaining structure but with cleaned labels and removed duplicates"""
     with open(original_file, 'r', encoding='utf-8') as file:
         content = file.read()
 
-    # Create a lookup for clean labels by URL
+    # Create a set of URLs to keep and their labels
+    urls_to_keep = {b['url'] for b in bookmarks}
     bookmark_lookup = {b['url']: b['formatted_label'] for b in bookmarks}
+    
+    # Debug: Keeping unique URLs from bookmarks
 
     soup = BeautifulSoup(content, 'html.parser')
 
-    # Find all A tags and replace their text with clean labels
-    a_tags = soup.find_all('a', href=True)
-    for a_tag in a_tags:
+    # Track seen URLs to handle duplicates in the original HTML
+    seen_urls = set()
+    removed_count = 0
+    
+    # Find all bookmark A tags and process them
+    # We need to collect them first to avoid modifying while iterating
+    # Only process actual bookmarks, not folder headers
+    a_tags = []
+    for dt in soup.find_all('dt'):
+        # Skip if this is a folder (has H3 child)
+        if dt.find('h3'):
+            continue
+        a_tag = dt.find('a', href=True)
+        if a_tag:
+            a_tags.append((a_tag, dt))
+    
+    tags_to_remove = []
+    
+    for a_tag, parent_dt in a_tags:
         url = a_tag.get('href', '').strip()
-        if url in bookmark_lookup:
-            # Replace the text content with clean label
-            a_tag.string = bookmark_lookup[url]
+        
+        if url not in urls_to_keep:
+            # This URL was removed during deduplication - remove from HTML
+            tags_to_remove.append(parent_dt)
+        elif url in seen_urls:
+            # This is a duplicate in the original HTML - remove it
+            tags_to_remove.append(parent_dt)
+        else:
+            # First occurrence of a kept URL - update label
+            seen_urls.add(url)
+            if url in bookmark_lookup:
+                a_tag.string = bookmark_lookup[url]
+    
+    # Now remove the duplicate entries
+    for dt in tags_to_remove:
+        dt.decompose()
+        removed_count += 1
 
-    # Add comment about cleaning
-    comment_text = '<!-- Bookmark labels cleaned by Bookmark Cleaner -->'
+    # Debug: Removed duplicate bookmark entries from HTML
+
+    # Add comment about cleaning and duplicate removal
+    comment_text = f'<!-- Bookmark labels cleaned and {removed_count} duplicates removed by Bookmark Cleaner -->'
     comment = soup.new_string(comment_text)
     if soup.find('meta'):
         soup.find('meta').insert_after(comment)
@@ -560,48 +595,114 @@ def export_bookmarks_preserve_structure(file_path: str, bookmarks: List[Dict[str
 
 
 def import_ai_organized_bookmarks(ai_content: str) -> Tuple[Dict, List[Dict]]:
-    """Parse AI-organized bookmark content back into structure"""
+    """Parse AI-organized bookmark content back into structure
+    
+    Expected format:
+    - Root folders: 0 spaces, "FOLDER: Name"
+    - Root bookmarks: 2 spaces, "domain | title"
+    - Sub-folders: 2 spaces, "FOLDER: Name"
+    - Sub-bookmarks: 4 spaces, "domain | title"
+    - Sub-sub-folders: 4 spaces, "FOLDER: Name"
+    - Sub-sub-bookmarks: 6 spaces, "domain | title"
+    """
     lines = ai_content.strip().split('\n')
     folder_structure = {}
     all_bookmarks = []
-    current_folder_path = []
+    folder_stack = []  # Track current folder hierarchy
     
-    for line in lines:
+    print(f"Parsing AI file: {len(lines)} lines")
+    
+    for line_num, line in enumerate(lines, 1):
+        original_line = line
         line = line.rstrip()
         if not line:
             continue
             
-        # Count indentation level
-        indent_level = (len(line) - len(line.lstrip())) // 2
+        # Count actual spaces for indentation
+        leading_spaces = len(line) - len(line.lstrip())
         content = line.strip()
         
         if content.startswith('FOLDER:'):
             folder_name = content[7:].strip()
-            # Adjust current path based on indent level
-            current_folder_path = current_folder_path[:indent_level]
-            current_folder_path.append(folder_name)
             
-            folder_path = "/".join(current_folder_path)
+            # Determine folder level based on indentation
+            # 0 spaces = root level, 2 spaces = level 1, 4 spaces = level 2, etc.
+            folder_level = leading_spaces // 2
+            
+            # Adjust folder stack to current level
+            if folder_level == 0:
+                # Root level folder
+                folder_stack = [folder_name]
+            elif folder_level == 1:
+                # Sub-folder under root
+                if len(folder_stack) >= 1:
+                    folder_stack = folder_stack[:1] + [folder_name]
+                else:
+                    # No root folder yet, treat as root
+                    folder_stack = [folder_name]
+            elif folder_level >= 2:
+                # Sub-sub-folder or deeper
+                target_level = min(folder_level, 2)  # Max 3 levels
+                if len(folder_stack) > target_level:
+                    folder_stack = folder_stack[:target_level] + [folder_name]
+                else:
+                    # Extend stack to target level
+                    while len(folder_stack) < target_level:
+                        folder_stack.append("Unknown")
+                    folder_stack.append(folder_name)
+            
+            folder_path = "/".join(folder_stack)
             if folder_path not in folder_structure:
                 folder_structure[folder_path] = []
+            
+            print(f"  FOLDER Line {line_num} (spaces:{leading_spaces}, level:{folder_level}): {folder_path}")
                 
-        elif ' | ' in content:
+        elif ' | ' in content and not content.startswith('#'):
             # This is a bookmark
             parts = content.split(' | ', 1)
             if len(parts) == 2:
                 domain, title = parts
-                folder_path = "/".join(current_folder_path) if current_folder_path else "root"
+                
+                # Determine which folder this bookmark belongs to based on indentation
+                # 2 spaces = root folder bookmark, 4 spaces = sub-folder bookmark, etc.
+                bookmark_level = leading_spaces // 2
+                
+                # Assign to appropriate folder
+                if bookmark_level == 0:
+                    # Should not happen for bookmarks, but handle gracefully
+                    current_folder = folder_stack[0] if folder_stack else "root"
+                elif bookmark_level == 1:
+                    # Bookmark under root folder (2 spaces)
+                    current_folder = folder_stack[0] if folder_stack else "root"
+                elif bookmark_level == 2:
+                    # Bookmark under sub-folder (4 spaces)
+                    if len(folder_stack) >= 2:
+                        current_folder = "/".join(folder_stack[:2])
+                    elif len(folder_stack) == 1:
+                        current_folder = folder_stack[0]
+                    else:
+                        current_folder = "root"
+                else:
+                    # Deeper levels (6+ spaces)
+                    # Use the deepest folder available
+                    current_folder = "/".join(folder_stack) if folder_stack else "root"
                 
                 bookmark = {
-                    "domain": domain,
-                    "title": title,
-                    "folder_path": folder_path,
+                    "domain": domain.strip(),
+                    "title": title.strip(),
+                    "folder_path": current_folder,
                     "formatted_label": content
                 }
                 
                 all_bookmarks.append(bookmark)
-                folder_structure.setdefault(folder_path, []).append(bookmark)
+                folder_structure.setdefault(current_folder, []).append(bookmark)
+                
+                print(f"  BOOKMARK Line {line_num} (spaces:{leading_spaces}): {domain.strip()[:30]}... -> {current_folder}")
+        
+        else:
+            print(f"  SKIPPING Line {line_num}: '{content[:50]}...'")
     
+    print(f"Parsing complete: {len(folder_structure)} folders, {len(all_bookmarks)} bookmarks")
     return folder_structure, all_bookmarks
 
 
@@ -841,7 +942,7 @@ def handle_export_workflow(bookmarks: List[Dict[str, Union[str, bool, int, None]
 
 def handle_ai_import(args: argparse.Namespace) -> None:
     """Handle importing AI-organized bookmarks"""
-    print("\n📥 Import AI-Organized Bookmarks")
+    print("\nImport AI-Organized Bookmarks")
     print("=" * 40)
     
     # Get AI content
@@ -852,12 +953,12 @@ def handle_ai_import(args: argparse.Namespace) -> None:
     
     if ai_file:
         if not os.path.exists(ai_file):
-            print(f"❌ File not found: {ai_file}")
+            print(f"ERROR: File not found: {ai_file}")
             return
         with open(ai_file, 'r', encoding='utf-8') as f:
             ai_content = f.read()
     else:
-        print("📋 Paste the AI-organized content (press Ctrl+D when done):")
+        print("Paste the AI-organized content (press Ctrl+D when done):")
         lines = []
         try:
             while True:
@@ -867,14 +968,14 @@ def handle_ai_import(args: argparse.Namespace) -> None:
             ai_content = '\n'.join(lines)
     
     if not ai_content.strip():
-        print("❌ No content provided")
+        print("ERROR: No content provided")
         return
     
     try:
         # Parse AI content
         folder_structure, organized_bookmarks = import_ai_organized_bookmarks(ai_content)
         
-        print(f"\n✅ Parsed {len(organized_bookmarks)} bookmarks into {len(folder_structure)} folders")
+        print(f"\nParsed {len(organized_bookmarks)} bookmarks into {len(folder_structure)} folders")
         
         # Load original bookmarks for metadata
         original_file = input("Enter path to original bookmarks file: ").strip()
@@ -882,7 +983,7 @@ def handle_ai_import(args: argparse.Namespace) -> None:
         if original_file and original_file[0] in ('"', "'") and original_file[-1] in ('"', "'"):
             original_file = original_file[1:-1]
         if not os.path.exists(original_file):
-            print(f"❌ Original file not found: {original_file}")
+            print(f"ERROR: Original file not found: {original_file}")
             return
             
         original_bookmarks = extract_all_bookmarks(original_file)
@@ -898,12 +999,12 @@ def handle_ai_import(args: argparse.Namespace) -> None:
         output_path = os.path.join(ai_organized_dir, f"{original_name}_ai_organized.html")
         create_html_from_ai_structure(folder_structure, original_bookmarks, output_path)
         
-        print(f"🎉 Created organized bookmark file: {output_path}")
+        print(f"SUCCESS: Created organized bookmark file: {output_path}")
         print("You can now import this file into your browser!")
         
     except Exception as e:
         logging.error(f"Failed to import AI content: {e}")
-        print(f"❌ Failed to parse AI content: {e}")
+        print(f"ERROR: Failed to parse AI content: {e}")
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -957,6 +1058,8 @@ Examples:
                        help='Skip creating backup (not recommended)')
     parser.add_argument('--backup-dir', type=str,
                        help='Custom directory for backup files')
+    parser.add_argument('--remove-duplicates', action='store_true',
+                       help='Remove exact URL duplicates (keeps first occurrence)')
     
     return parser.parse_args()
 
@@ -1044,21 +1147,42 @@ def prompt_for_backup(file_path: str) -> str:
 
 def process_bookmarks(file_path: str) -> List[Dict[str, Union[str, bool, int, None]]]:
     """Extract and clean bookmarks from HTML file"""
-    print("🔄 Extracting bookmarks and cleaning labels...")
+    print("Extracting bookmarks and cleaning labels...")
     bookmarks = extract_all_bookmarks(file_path)
-    print(f"✓ Found {len(bookmarks)} bookmarks")
-    print("✓ Cleaned labels and handled duplicates")
+    print(f"Found {len(bookmarks)} bookmarks")
+    print("Cleaned labels and handled duplicates")
     
     return bookmarks
 
 
 def show_cleaning_examples(bookmarks: List[Dict[str, Union[str, bool, int, None]]], count: int = 5) -> None:
     """Show examples of cleaned labels"""
-    print("\n🏷️  Label Cleaning Examples:")
+    print("\nLabel Cleaning Examples:")
     for i, bookmark in enumerate(bookmarks[:count]):
         print(f"  Original: {bookmark['original_title'][:60]}...")
         print(f"  Cleaned:  {bookmark['formatted_label']}")
         print()
+
+
+def remove_duplicate_urls(bookmarks: List[Dict[str, Union[str, bool, int, None]]]) -> List[Dict[str, Union[str, bool, int, None]]]:
+    """Remove bookmarks with duplicate URLs, keeping only the first occurrence"""
+    seen_urls = set()
+    unique_bookmarks = []
+    duplicates_removed = 0
+    
+    for bookmark in bookmarks:
+        url = bookmark['url']
+        if url not in seen_urls:
+            seen_urls.add(url)
+            unique_bookmarks.append(bookmark)
+        else:
+            duplicates_removed += 1
+    
+    if duplicates_removed > 0:
+        print(f"Removed {duplicates_removed} duplicate URLs (kept first occurrence)")
+        print(f"Bookmarks reduced from {len(bookmarks)} to {len(unique_bookmarks)}")
+    
+    return unique_bookmarks
 
 
 def handle_validation(bookmarks: List[Dict[str, Union[str, bool, int, None]]], 
@@ -1068,7 +1192,7 @@ def handle_validation(bookmarks: List[Dict[str, Union[str, bool, int, None]]],
     
     # Interactive prompt if not specified via arguments
     if not args.validate and not args.no_validate:
-        response = input("🔍 Validate all URLs? This may take a while (y/n): ")
+        response = input("Validate all URLs? This may take a while (y/n): ")
         should_validate = response.lower().startswith('y')
     
     if should_validate:
@@ -1126,7 +1250,7 @@ def generate_outputs(file_path: str, bookmarks: List[Dict[str, Union[str, bool, 
     os.makedirs(cleaned_dir, exist_ok=True)
     os.makedirs(reports_dir, exist_ok=True)
     
-    print(f"\n💾 Generating outputs for job: {job_folder}")
+    print(f"\nGenerating outputs for job: {job_folder}")
     
     # Generate HTML with original structure but clean labels
     html_output = create_html_with_clean_labels(file_path, bookmarks)
@@ -1162,9 +1286,9 @@ def generate_outputs(file_path: str, bookmarks: List[Dict[str, Union[str, bool, 
     with open(output_json_path, 'w', encoding='utf-8') as f:
         json.dump(json_report, f, indent=2)
     
-    print("✅ Files generated:")
-    print(f"  📄 {output_html_path}")
-    print(f"  📊 {output_json_path}")
+    print("Files generated:")
+    print(f"  HTML: {output_html_path}")
+    print(f"  JSON: {output_json_path}")
     
     return job_folder
 
@@ -1197,11 +1321,11 @@ def main() -> int:
         
         # Validate input file
         if not file_path:
-            print("❌ Error: No input file specified")
+            print("ERROR: No input file specified")
             return 1
             
         if not os.path.exists(file_path):
-            print(f"❌ Error: File not found: {file_path}")
+            print(f"ERROR: File not found: {file_path}")
             return 1
         
         # Update global config with command line args
@@ -1213,22 +1337,26 @@ def main() -> int:
         
         # Create backup before processing
         if args.no_backup:
-            print("⚠️  Proceeding without backup (--no-backup flag)")
+            print("WARNING: Proceeding without backup (--no-backup flag)")
             backup_path = None
         elif args.backup_dir:
             # Use specified backup directory
             backup_path = create_backup(file_path, args.backup_dir)
             if backup_path:
-                print(f"✅ Backup saved. You can restore from: {backup_path}\n")
+                print(f"Backup saved. You can restore from: {backup_path}\n")
         else:
             # Interactive backup prompt
             backup_path = prompt_for_backup(file_path)
             if backup_path:
-                print(f"✅ Backup saved. You can restore from: {backup_path}\n")
+                print(f"Backup saved. You can restore from: {backup_path}\n")
         
         # Process bookmarks
         bookmarks = process_bookmarks(file_path)
         show_cleaning_examples(bookmarks)
+        
+        # Remove duplicates if requested
+        if args.remove_duplicates:
+            bookmarks = remove_duplicate_urls(bookmarks)
         
         # Handle AI export workflow
         if args.ai_export:
@@ -1242,23 +1370,23 @@ def main() -> int:
         job_folder = generate_outputs(file_path, bookmarks, args.output_dir)
         
         # Offer AI organization option
-        print("\n🤖 AI Organization Available!")
+        print("\nAI Organization Available!")
         ai_choice = input("Would you like to export for AI organization? (y/n): ").strip().lower()
         if ai_choice.startswith('y'):
             handle_export_workflow(bookmarks, file_path, args, job_folder)
         
-        print("\n🎉 Done! Bookmarks cleaned while preserving original folder structure!")
+        print("\nSUCCESS: Done! Bookmarks cleaned while preserving original folder structure!")
         return 0
         
     except KeyboardInterrupt:
-        print("\n❌ Operation cancelled by user")
+        print("\nERROR: Operation cancelled by user")
         return 1
     except FileNotFoundError as e:
-        print(f"❌ Error: File not found - {e}")
+        print(f"ERROR: File not found - {e}")
         return 1
     except Exception as e:
         logging.error(f"Unexpected error: {e}")
-        print(f"❌ Unexpected error occurred. Check bookmark_cleaner.log for details.")
+        print(f"ERROR: Unexpected error occurred. Check bookmark_cleaner.log for details.")
         return 1
 
 

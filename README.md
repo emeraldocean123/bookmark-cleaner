@@ -8,6 +8,7 @@ A Python tool for cleaning browser bookmarks and organizing them intelligently w
 - **Automatic Backups**: Creates timestamped backups before processing (configurable location)
 - **Auto-Dependency Installation**: Detects missing packages and offers to install them
 - **Clean Bookmark Labels**: Removes marketing fluff and creates consistent `domain.com | title` format
+- **Duplicate Removal**: Remove exact URL duplicates with `--remove-duplicates` flag (NEW!)
 - **Smart Duplicate Handling**: For multiple bookmarks from the same domain, creates unique identifiers
 - **URL Validation**: Optional concurrent validation to check if links are still working
 - **Browser Compatible**: Generates standard HTML bookmark files
@@ -29,7 +30,7 @@ A Python tool for cleaning browser bookmarks and organizing them intelligently w
    ```
 3. Test the setup:
    ```cmd
-   python test_setup.py
+   python test_suite.py
    ```
 
 ### Option 2: Manual Setup
@@ -48,6 +49,9 @@ python bookmark_cleaner.py
 
 # Specify file directly  
 python bookmark_cleaner.py bookmarks.html
+
+# Remove duplicate URLs (keeps first occurrence)
+python bookmark_cleaner.py bookmarks.html --remove-duplicates
 
 # Custom output directory
 python bookmark_cleaner.py bookmarks.html --output-dir ./cleaned
@@ -198,17 +202,45 @@ FOLDER: News & Information
 
 ## Output Files
 
-All output files are generated in the `output/` subfolder:
+All output files are organized in timestamped job folders within the `bookmarks-processed/` directory:
 
-**Standard Files:**
-- **`output/clean_bookmarks.html`** - Your cleaned bookmarks with original folder structure
-- **`output/bookmarks_report.json`** - Detailed report with all bookmark data
+### Folder Structure
+```
+bookmarks-processed/
+├── ai-export/                    # AI export files
+│   ├── bookmarks_for_ai.txt     
+│   └── bookmarks-ai-grok.txt    
+├── ai-organized/                 # AI organized results
+│   └── job_YYYYMMDD_HHMMSS_name/
+│       └── name_ai_organized.html
+├── cleaned/                      # Standard cleaned bookmarks
+│   └── job_YYYYMMDD_HHMMSS_name/
+│       └── name_cleaned.html
+└── reports/                      # Detailed JSON reports
+    └── job_YYYYMMDD_HHMMSS_name/
+        └── name_report.json
+```
 
-**AI Workflow Files:**
-- **`output/bookmarks_for_ai.txt`** - Export with AI instructions for organization
-- **`output/bookmarks_flattened.txt`** - Simple flat list of all bookmarks
-- **`output/bookmarks_structured.txt`** - Preserves original folder structure
-- **`output/ai_organized_bookmarks.html`** - Final AI-organized bookmark file for browser import
+### File Types
+- **Cleaned HTML**: Browser-importable files with clean labels and preserved folder structure
+- **AI Organized HTML**: Browser-importable files with AI-generated folder organization  
+- **JSON Reports**: Detailed metadata including validation results and processing statistics
+- **AI Export Files**: Text files formatted for AI organization with detailed instructions
+
+### Testing
+Run the comprehensive test suite to verify functionality:
+```bash
+# Run all tests
+python test_suite.py
+
+# Run specific tests
+python test_suite.py --test parsing
+python test_suite.py --test workflow  
+python test_suite.py --test syntax
+
+# Verbose output
+python test_suite.py --verbose
+```
 
 ## Key Principles
 
