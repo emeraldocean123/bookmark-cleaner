@@ -61,7 +61,7 @@ check_and_install_dependencies()
 from bs4 import BeautifulSoup
 import json
 import requests
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 import re
 import time
 import argparse
@@ -70,17 +70,24 @@ from typing import Dict, List, Optional, Union, Tuple
 import concurrent.futures
 import pyperclip
 from pathlib import Path
+import ssl
+import warnings
+from urllib3.exceptions import InsecureRequestWarning
 
 
 # Configuration defaults
 DEFAULT_CONFIG = {
     'timeout': 10,
-    'max_workers': 5,
-    'title_max_length': 40,
-    'validation_delay': 0.1,
+    'max_workers': 10,  # Increased for better performance
+    'title_max_length': 60,  # Increased for better readability
+    'validation_delay': 0.05,  # Reduced delay for better performance
     'output_dir': 'bookmarks-processed',
     'input_dir': 'bookmarks-input',
-    'backup_dir': 'bookmarks-backups'
+    'backup_dir': 'bookmarks-backups',
+    'batch_size': 100,  # Process bookmarks in batches
+    'max_redirects': 3,  # Limit redirects for security
+    'connect_timeout': 5,  # Separate connect timeout
+    'read_timeout': 10  # Separate read timeout
 }
 
 
@@ -96,10 +103,45 @@ def setup_logging() -> None:
     )
 
 
+def sanitize_url(url: str) -> str:
+    """Sanitize and validate URL to prevent security issues"""
+    if not url or not isinstance(url, str):
+        return ""
+    
+    # Remove potential XSS attempts and dangerous schemes
+    url = url.strip()
+    dangerous_schemes = ['javascript:', 'data:', 'vbscript:', 'file:', 'about:']
+    url_lower = url.lower()
+    
+    for scheme in dangerous_schemes:
+        if url_lower.startswith(scheme):
+            return ""
+    
+    # Only allow http and https
+    if not (url_lower.startswith('http://') or url_lower.startswith('https://')):
+        # Try to fix common issues
+        if url.startswith('//'):
+            url = 'https:' + url
+        elif not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+    
+    try:
+        parsed = urlparse(url)
+        if not parsed.netloc:
+            return ""
+        # Reconstruct URL to normalize it
+        return urlunparse(parsed)
+    except Exception:
+        return ""
+
 def extract_domain(url: str) -> str:
     """Extract clean domain name from URL in consistent format"""
     try:
-        parsed = urlparse(url)
+        sanitized = sanitize_url(url)
+        if not sanitized:
+            return "unknown.com"
+        
+        parsed = urlparse(sanitized)
         domain = parsed.netloc.lower()
         # Remove www. prefix
         if domain.startswith('www.'):
@@ -110,10 +152,14 @@ def extract_domain(url: str) -> str:
         return "unknown.com"
 
 
-def clean_title(title: str, max_length: int = DEFAULT_CONFIG['title_max_length']) -> str:
+def clean_title(title: Optional[str], max_length: int = DEFAULT_CONFIG['title_max_length']) -> str:
     """Clean up bookmark title by removing common suffixes and junk"""
-    if not title:
+    if not title or not isinstance(title, str):
         return "Untitled"
+    
+    # Escape potential HTML entities and remove dangerous content
+    title = re.sub(r'<[^>]*>', '', title)  # Remove HTML tags
+    title = re.sub(r'&[a-zA-Z0-9#]+;', ' ', title)  # Remove HTML entities
 
     # Remove common website suffixes and separators
     cleanup_patterns = [
@@ -160,9 +206,15 @@ def clean_title(title: str, max_length: int = DEFAULT_CONFIG['title_max_length']
 
 def extract_all_bookmarks(file_path: str) -> List[Dict[str, Union[str, bool, int, None]]]:
     """Extract all bookmarks from HTML file"""
-    with open(file_path, 'r', encoding='utf-8') as file:
-        content = file.read()
+    try:
+        with open(file_path, 'r', encoding='utf-8') as file:
+            content = file.read()
+    except (UnicodeDecodeError, IOError) as e:
+        logging.error(f"Failed to read file {file_path}: {e}")
+        return []
 
+    # Use 'html.parser' instead of 'lxml' for better security
+    # and to avoid XML entity expansion attacks
     soup = BeautifulSoup(content, 'html.parser')
 
     # Find all A tags with href attributes
@@ -176,9 +228,13 @@ def extract_all_bookmarks(file_path: str) -> List[Dict[str, Union[str, bool, int
         url = a_tag.get('href', '').strip()
         title = a_tag.get_text().strip()
 
-        if url and title:  # Only include if both exist
+        # Sanitize URL and title
+        url = sanitize_url(url)
+        title = clean_title(title)
+
+        if url and title:  # Only include if both exist and are valid
             domain = extract_domain(url)
-            clean_label = clean_title(title)
+            clean_label = title
 
             bookmark = {
                 'original_title': title,
@@ -354,23 +410,54 @@ def create_html_with_clean_labels(original_file, bookmarks):
 def validate_bookmark(bookmark: Dict[str, Union[str, bool, int, None]], 
                       session: requests.Session, 
                       timeout: int = DEFAULT_CONFIG['timeout']) -> Dict[str, Union[str, bool, int, None]]:
-    """Validate a single bookmark"""
+    """Validate a single bookmark with security measures"""
+    url = bookmark.get('url', '')
+    
+    # Re-sanitize URL before validation
+    url = sanitize_url(url)
+    if not url:
+        bookmark['is_valid'] = False
+        bookmark['status_code'] = None
+        bookmark['error'] = 'Invalid or dangerous URL'
+        return bookmark
+    
+    # Update bookmark with sanitized URL
+    bookmark['url'] = url
+    
     try:
-        response = session.head(bookmark['url'], timeout=timeout,
-                                allow_redirects=True)
+        # Try HEAD request first (more efficient and safer)
+        response = session.head(url, timeout=timeout, allow_redirects=True, stream=False)
         bookmark['is_valid'] = True
         bookmark['status_code'] = response.status_code
         return bookmark
-    except Exception:
+    except requests.exceptions.SSLError as e:
+        bookmark['is_valid'] = False
+        bookmark['status_code'] = None
+        bookmark['error'] = f'SSL Error: {str(e)[:100]}'
+        return bookmark
+    except requests.exceptions.Timeout:
+        bookmark['is_valid'] = False
+        bookmark['status_code'] = None
+        bookmark['error'] = 'Request timeout'
+        return bookmark
+    except requests.exceptions.ConnectionError:
+        bookmark['is_valid'] = False
+        bookmark['status_code'] = None
+        bookmark['error'] = 'Connection error'
+        return bookmark
+    except Exception as e:
         try:
-            response = session.get(bookmark['url'], timeout=timeout,
-                                   allow_redirects=True)
+            # Fallback to GET request with limited response size
+            response = session.get(url, timeout=timeout, allow_redirects=True, 
+                                 stream=True, headers={'Range': 'bytes=0-1024'})
             bookmark['is_valid'] = True
             bookmark['status_code'] = response.status_code
+            response.close()  # Close connection immediately
             return bookmark
-        except Exception:
+        except Exception as e2:
             bookmark['is_valid'] = False
             bookmark['status_code'] = None
+            bookmark['error'] = f'Validation failed: {str(e2)[:100]}'
             return bookmark
 
 
@@ -378,10 +465,23 @@ def validate_bookmarks_concurrent(bookmarks: List[Dict[str, Union[str, bool, int
                                   max_workers: int = DEFAULT_CONFIG['max_workers']) -> List[Dict[str, Union[str, bool, int, None]]]:
     """Validate all bookmarks concurrently for better performance"""
     session = requests.Session()
-    user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    
+    # Configure secure session
     session.headers.update({
-        'User-Agent': user_agent
+        'User-Agent': user_agent,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1'
     })
+    
+    # Configure SSL/TLS settings for security
+    session.verify = True  # Always verify SSL certificates
+    
+    # Suppress only specific warnings, not all SSL warnings
+    warnings.filterwarnings('ignore', category=InsecureRequestWarning)
 
     print(f"🔍 Validating {len(bookmarks)} bookmarks using {max_workers} concurrent workers...")
 
@@ -415,10 +515,20 @@ def validate_bookmarks_sequential(bookmarks: List[Dict[str, Union[str, bool, int
                                   max_workers: int = DEFAULT_CONFIG['max_workers']) -> List[Dict[str, Union[str, bool, int, None]]]:
     """Validate all bookmarks sequentially (legacy method)"""
     session = requests.Session()
-    user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    
+    # Configure secure session
     session.headers.update({
-        'User-Agent': user_agent
+        'User-Agent': user_agent,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1'
     })
+    
+    # Configure SSL/TLS settings for security
+    session.verify = True  # Always verify SSL certificates
 
     print(f"🔍 Validating {len(bookmarks)} bookmarks sequentially...")
 

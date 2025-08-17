@@ -5,6 +5,13 @@ Quick syntax validation for bookmark_cleaner.py
 
 import ast
 import sys
+import os
+
+# Ensure proper Unicode output on Windows
+if os.name == 'nt':
+    import codecs
+    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
+    sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
 
 def validate_syntax(filename):
     """Validate Python syntax without executing"""
@@ -14,17 +21,17 @@ def validate_syntax(filename):
         
         # Parse the AST to check for syntax errors
         ast.parse(source)
-        print(f"✅ Syntax validation passed for {filename}")
+        print(f"[PASS] Syntax validation passed for {filename}")
         return True
         
     except SyntaxError as e:
-        print(f"❌ Syntax error in {filename}:")
+        print(f"[FAIL] Syntax error in {filename}:")
         print(f"  Line {e.lineno}: {e.msg}")
         if e.text:
             print(f"  Code: {e.text.strip()}")
         return False
     except Exception as e:
-        print(f"❌ Error reading {filename}: {e}")
+        print(f"[ERROR] Error reading {filename}: {e}")
         return False
 
 if __name__ == "__main__":
