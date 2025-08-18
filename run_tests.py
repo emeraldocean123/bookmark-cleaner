@@ -113,9 +113,37 @@ def run_quick_tests():
         print(f"   Security: ERROR - {e}")
         security_ok = False
     
-    quick_passed = syntax_ok and security_ok
+    # Quick duplicate removal check
+    print("3. Duplicate Removal Check...")
+    try:
+        from tests.test_duplicate_removal import TestDuplicateDetector
+        suite = unittest.TestLoader().loadTestsFromTestCase(TestDuplicateDetector)
+        result = unittest.TextTestRunner(verbosity=0).run(suite)
+        duplicate_ok = result.wasSuccessful()
+        print(f"   Duplicates: {'✓ PASSED' if duplicate_ok else '✗ FAILED'}")
+    except Exception as e:
+        print(f"   Duplicates: ERROR - {e}")
+        duplicate_ok = False
+    
+    quick_passed = syntax_ok and security_ok and duplicate_ok
     print(f"\nQuick tests: {'✓ PASSED' if quick_passed else '✗ FAILED'}")
     return quick_passed
+
+def run_duplicate_tests():
+    """Run comprehensive duplicate removal tests"""
+    print("Running Duplicate Removal Tests...")
+    print("=" * 60)
+    
+    try:
+        from tests.test_duplicate_removal import run_duplicate_tests
+        return run_duplicate_tests()
+    except ImportError as e:
+        print(f"Could not import duplicate tests: {e}")
+        return False
+    except Exception as e:
+        print(f"Error running duplicate tests: {e}")
+        return False
+
 
 if __name__ == "__main__":
     import argparse
@@ -127,6 +155,8 @@ if __name__ == "__main__":
                        help='Run only security tests')
     parser.add_argument('--performance', action='store_true', 
                        help='Run only performance tests')
+    parser.add_argument('--duplicates', action='store_true', 
+                       help='Run only duplicate removal tests')
     
     args = parser.parse_args()
     
@@ -144,6 +174,8 @@ if __name__ == "__main__":
         runner = unittest.TextTestRunner(verbosity=2)
         result = runner.run(suite)
         success = result.wasSuccessful()
+    elif args.duplicates:
+        success = run_duplicate_tests()
     else:
         success = run_all_tests()
     

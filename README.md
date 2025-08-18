@@ -53,6 +53,14 @@ python bookmark_cleaner.py bookmarks.html
 # Remove duplicate URLs (keeps first occurrence)
 python bookmark_cleaner.py bookmarks.html --remove-duplicates
 
+# Advanced duplicate removal with different strategies
+python bookmark_cleaner.py bookmarks.html --remove-duplicates --duplicate-strategy smart
+python bookmark_cleaner.py bookmarks.html --remove-duplicates --duplicate-strategy fuzzy --similarity-threshold 0.8
+python bookmark_cleaner.py bookmarks.html --remove-duplicates --keep-strategy last
+
+# Generate detailed duplicate analysis report
+python bookmark_cleaner.py bookmarks.html --remove-duplicates --duplicate-report
+
 # Custom output directory
 python bookmark_cleaner.py bookmarks.html --output-dir ./cleaned
 ```
@@ -153,15 +161,102 @@ schwab.com | Charles Schwab
 paypal.com | PayPal
 ```
 
-## Duplicate Handling
+## Advanced Duplicate Removal
 
-For multiple bookmarks from the same domain:
+### Duplicate Detection Strategies
+
+#### 1. **URL Strategy (Default)**
+Removes bookmarks with identical normalized URLs:
+- Normalizes case, removes www, strips tracking parameters
+- Handles `utm_*`, `fbclid`, `gclid` parameters
+- Example: `https://example.com` = `https://www.example.com?utm_source=google`
+
+#### 2. **Title Strategy**
+Removes bookmarks with identical titles:
+- Case-insensitive comparison
+- Useful for bookmarks with different URLs but same content
+
+#### 3. **Smart Strategy**
+Intelligent duplicate detection:
+- Groups bookmarks by domain first
+- Detects URL duplicates within each domain
+- Preserves meaningful variations while removing true duplicates
+
+#### 4. **Fuzzy Strategy**
+Advanced similarity-based detection:
+- Combines URL, title, and domain similarity
+- Configurable similarity threshold (0.0-1.0)
+- Uses weighted scoring: URL (50%) + Title (30%) + Domain (20%)
+
+### Keep Strategies
+
+Choose which duplicate to keep when multiple are found:
+
+- **`first`** (default) - Keep the first occurrence
+- **`last`** - Keep the last occurrence  
+- **`shortest`** - Keep bookmark with shortest title
+- **`longest`** - Keep bookmark with longest title
+
+### Duplicate Analysis Report
+
+Generate detailed reports with `--duplicate-report`:
+
+```
+Duplicate Analysis Report - Strategy: smart
+Similarity Threshold: 0.85
+Keep Strategy: first
+Total Duplicates Removed: 45
+Duplicate Groups Found: 12
+
+Duplicate Groups:
+Group 1: 3 duplicates
+  - Index 5: https://example.com
+  - Index 23: https://www.example.com/
+  - Index 67: https://example.com?utm_source=google
+```
+
+### Examples
+
+#### Basic Duplicate Removal
+```bash
+# Remove exact URL duplicates
+python bookmark_cleaner.py bookmarks.html --remove-duplicates
+```
+
+#### Smart Detection
+```bash
+# Use smart strategy to group by domain
+python bookmark_cleaner.py bookmarks.html --remove-duplicates --duplicate-strategy smart
+```
+
+#### Fuzzy Matching
+```bash
+# Use fuzzy matching with custom threshold
+python bookmark_cleaner.py bookmarks.html --remove-duplicates \
+  --duplicate-strategy fuzzy \
+  --similarity-threshold 0.7 \
+  --keep-strategy longest
+```
+
+#### Analysis Report
+```bash
+# Generate detailed duplicate analysis
+python bookmark_cleaner.py bookmarks.html --remove-duplicates \
+  --duplicate-strategy smart \
+  --duplicate-report
+```
+
+### Smart Domain Grouping
+
+For multiple bookmarks from the same domain, smart strategy creates meaningful groupings:
 
 ```
 github.com | Homepage              (from github.com/en/)
 github.com | Cactbot               (from github.com/quisquous/cactbot)
 github.com | Ember Overlay         (from github.com/GoldenChrysus/ffxiv-ember-overlay)
 ```
+
+Each represents a unique project/page, so all are preserved.
 
 ## 🤖 AI Organization Format
 

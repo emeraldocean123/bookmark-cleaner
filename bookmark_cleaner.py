@@ -92,15 +92,32 @@ DEFAULT_CONFIG = {
 
 
 def setup_logging() -> None:
-    """Setup logging configuration"""
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler('bookmark_cleaner.log'),
-            logging.StreamHandler(sys.stdout)
-        ]
-    )
+    """Setup logging configuration with proper encoding"""
+    # Clear any existing handlers
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+    
+    # Create file handler with UTF-8 encoding
+    file_handler = logging.FileHandler('bookmark_cleaner.log', encoding='utf-8')
+    
+    # Create console handler with proper encoding
+    console_handler = logging.StreamHandler(sys.stdout)
+    if hasattr(sys.stdout, 'reconfigure'):
+        # Python 3.7+ - reconfigure stdout to use UTF-8
+        try:
+            sys.stdout.reconfigure(encoding='utf-8')
+        except:
+            pass
+    
+    # Set format for both handlers
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    
+    # Configure root logger
+    logging.root.setLevel(logging.INFO)
+    logging.root.addHandler(file_handler)
+    logging.root.addHandler(console_handler)
 
 
 def sanitize_url(url: str) -> str:
@@ -1168,8 +1185,17 @@ Examples:
                        help='Skip creating backup (not recommended)')
     parser.add_argument('--backup-dir', type=str,
                        help='Custom directory for backup files')
+    # Duplicate removal options
     parser.add_argument('--remove-duplicates', action='store_true',
                        help='Remove exact URL duplicates (keeps first occurrence)')
+    parser.add_argument('--duplicate-strategy', choices=['url', 'title', 'smart', 'fuzzy'], 
+                       default='url', help='Strategy for duplicate detection (default: url)')
+    parser.add_argument('--similarity-threshold', type=float, default=0.85, 
+                       help='Similarity threshold for fuzzy matching (0.0-1.0, default: 0.85)')
+    parser.add_argument('--keep-strategy', choices=['first', 'last', 'shortest', 'longest'], 
+                       default='first', help='Which duplicate to keep (default: first)')
+    parser.add_argument('--duplicate-report', action='store_true',
+                       help='Generate detailed duplicate analysis report')
     
     return parser.parse_args()
 
@@ -1274,25 +1300,322 @@ def show_cleaning_examples(bookmarks: List[Dict[str, Union[str, bool, int, None]
         print()
 
 
-def remove_duplicate_urls(bookmarks: List[Dict[str, Union[str, bool, int, None]]]) -> List[Dict[str, Union[str, bool, int, None]]]:
-    """Remove bookmarks with duplicate URLs, keeping only the first occurrence"""
-    seen_urls = set()
-    unique_bookmarks = []
-    duplicates_removed = 0
+def normalize_url(url: str) -> str:
+    """Normalize URL for duplicate detection"""
+    if not url:
+        return ""
     
-    for bookmark in bookmarks:
-        url = bookmark['url']
-        if url not in seen_urls:
-            seen_urls.add(url)
-            unique_bookmarks.append(bookmark)
+    # Remove common URL variations
+    url = url.lower().strip()
+    
+    # Remove trailing slashes
+    if url.endswith('/'):
+        url = url[:-1]
+    
+    # Remove www prefix
+    if url.startswith('http://www.'):
+        url = url.replace('http://www.', 'http://', 1)
+    elif url.startswith('https://www.'):
+        url = url.replace('https://www.', 'https://', 1)
+    
+    # Remove common tracking parameters
+    tracking_params = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+                      'fbclid', 'gclid', '_ga', 'ref', 'source', 'campaign']
+    
+    if '?' in url:
+        base_url, params = url.split('?', 1)
+        param_pairs = params.split('&')
+        clean_params = []
+        
+        for param in param_pairs:
+            if '=' in param:
+                key = param.split('=')[0]
+                if key not in tracking_params:
+                    clean_params.append(param)
+        
+        if clean_params:
+            url = base_url + '?' + '&'.join(clean_params)
         else:
-            duplicates_removed += 1
+            url = base_url
     
-    if duplicates_removed > 0:
-        print(f"Removed {duplicates_removed} duplicate URLs (kept first occurrence)")
+    return url
+
+
+def calculate_title_similarity(title1: str, title2: str) -> float:
+    """Calculate similarity between two titles using simple algorithms"""
+    # Handle None inputs
+    if title1 is None:
+        title1 = ""
+    if title2 is None:
+        title2 = ""
+    
+    # Normalize titles
+    t1 = title1.lower().strip()
+    t2 = title2.lower().strip()
+    
+    # Both empty strings are identical
+    if not t1 and not t2:
+        return 1.0
+    
+    # One empty, one non-empty
+    if not t1 or not t2:
+        return 0.0
+    
+    # Exact match
+    if t1 == t2:
+        return 1.0
+    
+    # Calculate Jaccard similarity based on words
+    words1 = set(t1.split())
+    words2 = set(t2.split())
+    
+    if not words1 and not words2:
+        return 1.0
+    if not words1 or not words2:
+        return 0.0
+    
+    intersection = words1.intersection(words2)
+    union = words1.union(words2)
+    
+    return len(intersection) / len(union)
+
+
+def calculate_levenshtein_ratio(s1: str, s2: str) -> float:
+    """Calculate Levenshtein distance ratio between two strings"""
+    if not s1 and not s2:
+        return 1.0
+    if not s1 or not s2:
+        return 0.0
+    
+    if len(s1) < len(s2):
+        s1, s2 = s2, s1
+    
+    if len(s2) == 0:
+        return 0.0
+    
+    # Create matrix
+    previous_row = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        current_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = previous_row[j + 1] + 1
+            deletions = current_row[j] + 1
+            substitutions = previous_row[j] + (c1 != c2)
+            current_row.append(min(insertions, deletions, substitutions))
+        previous_row = current_row
+    
+    distance = previous_row[-1]
+    max_len = max(len(s1), len(s2))
+    return (max_len - distance) / max_len
+
+
+class DuplicateDetector:
+    """Advanced duplicate detection with multiple strategies"""
+    
+    def __init__(self, strategy: str = 'url', similarity_threshold: float = 0.85, 
+                 keep_strategy: str = 'first'):
+        self.strategy = strategy
+        self.similarity_threshold = similarity_threshold
+        self.keep_strategy = keep_strategy
+        self.duplicate_groups = []
+        self.removed_count = 0
+    
+    def detect_duplicates(self, bookmarks: List[Dict[str, Union[str, bool, int, None]]]) -> List[Dict[str, Union[str, bool, int, None]]]:
+        """Detect and remove duplicates based on selected strategy"""
+        if self.strategy == 'url':
+            return self._remove_url_duplicates(bookmarks)
+        elif self.strategy == 'title':
+            return self._remove_title_duplicates(bookmarks)
+        elif self.strategy == 'smart':
+            return self._remove_smart_duplicates(bookmarks)
+        elif self.strategy == 'fuzzy':
+            return self._remove_fuzzy_duplicates(bookmarks)
+        else:
+            return bookmarks
+    
+    def _remove_url_duplicates(self, bookmarks: List[Dict[str, Union[str, bool, int, None]]]) -> List[Dict[str, Union[str, bool, int, None]]]:
+        """Remove bookmarks with duplicate URLs"""
+        seen_urls = {}
+        duplicate_groups = []
+        
+        for i, bookmark in enumerate(bookmarks):
+            normalized_url = normalize_url(bookmark['url'])
+            
+            if normalized_url in seen_urls:
+                # Found duplicate
+                original_index = seen_urls[normalized_url]
+                duplicate_groups.append([original_index, i])
+            else:
+                seen_urls[normalized_url] = i
+        
+        return self._apply_keep_strategy(bookmarks, duplicate_groups)
+    
+    def _remove_title_duplicates(self, bookmarks: List[Dict[str, Union[str, bool, int, None]]]) -> List[Dict[str, Union[str, bool, int, None]]]:
+        """Remove bookmarks with identical titles"""
+        seen_titles = {}
+        duplicate_groups = []
+        
+        for i, bookmark in enumerate(bookmarks):
+            title = bookmark.get('formatted_label', '').lower().strip()
+            
+            if title and title in seen_titles:
+                original_index = seen_titles[title]
+                duplicate_groups.append([original_index, i])
+            elif title:
+                seen_titles[title] = i
+        
+        return self._apply_keep_strategy(bookmarks, duplicate_groups)
+    
+    def _remove_smart_duplicates(self, bookmarks: List[Dict[str, Union[str, bool, int, None]]]) -> List[Dict[str, Union[str, bool, int, None]]]:
+        """Smart duplicate removal: URL normalization + domain + title similarity"""
+        groups = {}
+        duplicate_groups = []
+        
+        for i, bookmark in enumerate(bookmarks):
+            url = bookmark['url']
+            domain = bookmark.get('domain', '')
+            title = bookmark.get('formatted_label', '')
+            
+            # Group by domain first
+            if domain not in groups:
+                groups[domain] = []
+            groups[domain].append((i, bookmark))
+        
+        # Check for duplicates within each domain group
+        for domain, group_bookmarks in groups.items():
+            if len(group_bookmarks) <= 1:
+                continue
+            
+            # Check for URL duplicates within domain
+            seen_urls = {}
+            for idx, bookmark in group_bookmarks:
+                normalized_url = normalize_url(bookmark['url'])
+                if normalized_url in seen_urls:
+                    duplicate_groups.append([seen_urls[normalized_url], idx])
+                else:
+                    seen_urls[normalized_url] = idx
+        
+        return self._apply_keep_strategy(bookmarks, duplicate_groups)
+    
+    def _remove_fuzzy_duplicates(self, bookmarks: List[Dict[str, Union[str, bool, int, None]]]) -> List[Dict[str, Union[str, bool, int, None]]]:
+        """Fuzzy duplicate removal using similarity thresholds"""
+        duplicate_groups = []
+        processed = set()
+        
+        for i in range(len(bookmarks)):
+            if i in processed:
+                continue
+            
+            current_group = [i]
+            bookmark1 = bookmarks[i]
+            
+            for j in range(i + 1, len(bookmarks)):
+                if j in processed:
+                    continue
+                
+                bookmark2 = bookmarks[j]
+                
+                # Calculate similarities
+                url_sim = 1.0 if normalize_url(bookmark1['url']) == normalize_url(bookmark2['url']) else 0.0
+                title_sim = calculate_title_similarity(bookmark1.get('formatted_label', ''), 
+                                                     bookmark2.get('formatted_label', ''))
+                domain_sim = 1.0 if bookmark1.get('domain', '') == bookmark2.get('domain', '') else 0.0
+                
+                # Weighted similarity score
+                overall_sim = (url_sim * 0.5) + (title_sim * 0.3) + (domain_sim * 0.2)
+                
+                if overall_sim >= self.similarity_threshold:
+                    current_group.append(j)
+                    processed.add(j)
+            
+            if len(current_group) > 1:
+                duplicate_groups.append(current_group)
+            
+            processed.add(i)
+        
+        return self._apply_keep_strategy(bookmarks, duplicate_groups)
+    
+    def _apply_keep_strategy(self, bookmarks: List[Dict[str, Union[str, bool, int, None]]], 
+                           duplicate_groups: List[List[int]]) -> List[Dict[str, Union[str, bool, int, None]]]:
+        """Apply the keep strategy to duplicate groups"""
+        indices_to_remove = set()
+        self.duplicate_groups = duplicate_groups
+        
+        for group in duplicate_groups:
+            if len(group) <= 1:
+                continue
+            
+            # Determine which bookmark to keep based on strategy
+            if self.keep_strategy == 'first':
+                keep_index = min(group)
+            elif self.keep_strategy == 'last':
+                keep_index = max(group)
+            elif self.keep_strategy == 'shortest':
+                keep_index = min(group, key=lambda i: len(bookmarks[i].get('formatted_label', '')))
+            elif self.keep_strategy == 'longest':
+                keep_index = max(group, key=lambda i: len(bookmarks[i].get('formatted_label', '')))
+            else:
+                keep_index = group[0]  # Default to first
+            
+            # Mark others for removal
+            for idx in group:
+                if idx != keep_index:
+                    indices_to_remove.add(idx)
+        
+        # Create new list without duplicates
+        unique_bookmarks = [bookmark for i, bookmark in enumerate(bookmarks) 
+                          if i not in indices_to_remove]
+        
+        self.removed_count = len(indices_to_remove)
+        return unique_bookmarks
+    
+    def generate_report(self) -> str:
+        """Generate detailed duplicate analysis report"""
+        if not self.duplicate_groups:
+            return "No duplicates found."
+        
+        report = []
+        report.append(f"Duplicate Analysis Report - Strategy: {self.strategy}")
+        report.append(f"Similarity Threshold: {self.similarity_threshold}")
+        report.append(f"Keep Strategy: {self.keep_strategy}")
+        report.append(f"Total Duplicates Removed: {self.removed_count}")
+        report.append(f"Duplicate Groups Found: {len(self.duplicate_groups)}")
+        report.append("\nDuplicate Groups:")
+        
+        for i, group in enumerate(self.duplicate_groups, 1):
+            if len(group) > 1:
+                report.append(f"\nGroup {i}: {len(group)} duplicates")
+                for idx in group:
+                    report.append(f"  - Index {idx}")
+        
+        return "\n".join(report)
+
+
+def remove_duplicate_urls(bookmarks: List[Dict[str, Union[str, bool, int, None]]], 
+                         strategy: str = 'url', similarity_threshold: float = 0.85,
+                         keep_strategy: str = 'first', generate_report: bool = False
+                         ) -> Tuple[List[Dict[str, Union[str, bool, int, None]]], Optional[str]]:
+    """Enhanced duplicate removal with multiple strategies"""
+    if not bookmarks:
+        return bookmarks, None
+    
+    detector = DuplicateDetector(strategy, similarity_threshold, keep_strategy)
+    unique_bookmarks = detector.detect_duplicates(bookmarks)
+    
+    if detector.removed_count > 0:
+        print(f"\nDuplicate Removal Results:")
+        print(f"Strategy: {strategy.title()}")
+        print(f"Removed {detector.removed_count} duplicate bookmarks")
         print(f"Bookmarks reduced from {len(bookmarks)} to {len(unique_bookmarks)}")
+        
+        if strategy == 'fuzzy':
+            print(f"Similarity threshold: {similarity_threshold}")
+        print(f"Keep strategy: {keep_strategy}")
+    else:
+        print("No duplicates found.")
     
-    return unique_bookmarks
+    report = detector.generate_report() if generate_report else None
+    return unique_bookmarks, report
 
 
 def handle_validation(bookmarks: List[Dict[str, Union[str, bool, int, None]]], 
@@ -1466,7 +1789,23 @@ def main() -> int:
         
         # Remove duplicates if requested
         if args.remove_duplicates:
-            bookmarks = remove_duplicate_urls(bookmarks)
+            bookmarks, duplicate_report = remove_duplicate_urls(
+                bookmarks, 
+                strategy=args.duplicate_strategy,
+                similarity_threshold=args.similarity_threshold,
+                keep_strategy=args.keep_strategy,
+                generate_report=args.duplicate_report
+            )
+            
+            # Save duplicate report if requested
+            if duplicate_report and args.duplicate_report:
+                # Create timestamp for duplicate report
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                report_path = os.path.join(args.output_dir, f"duplicate_report_{timestamp}.txt")
+                os.makedirs(args.output_dir, exist_ok=True)
+                with open(report_path, 'w', encoding='utf-8') as f:
+                    f.write(duplicate_report)
+                print(f"Duplicate analysis report saved to: {report_path}")
         
         # Handle AI export workflow
         if args.ai_export:
