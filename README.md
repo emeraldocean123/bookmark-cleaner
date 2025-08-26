@@ -356,3 +356,8 @@ python test_suite.py --verbose
 ## License
 
 MIT License
+## Contributing
+
+- Use Conventional Commits for messages: `type(scope)?: subject`.
+- Repo commit template: `.commit-template.txt` is configured.
+- Shared hooks: global `core.hooksPath` → `Documents/dev/dotfiles/githooks` (pre-commit checks and commit-msg enforcement).
