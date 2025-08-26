@@ -361,3 +361,7 @@ MIT License
 - Use Conventional Commits for messages: `type(scope)?: subject`.
 - Repo commit template: `.commit-template.txt` is configured.
 - Shared hooks: global `core.hooksPath` → `Documents/dev/dotfiles/githooks` (pre-commit checks and commit-msg enforcement).
+
+## Review Routing
+
+- CODEOWNERS routes PR reviews to `@emeraldocean123` automatically.
