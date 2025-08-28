@@ -62,6 +62,13 @@ class TestURLNormalization(unittest.TestCase):
         expected = "https://example.com"
         self.assertEqual(normalize_url(original), expected)
 
+    def test_default_port_removal(self):
+        """Default ports should be stripped from URLs"""
+        self.assertEqual(normalize_url("http://example.com:80"), "http://example.com")
+        self.assertEqual(normalize_url("https://example.com:443"), "https://example.com")
+        # Non-default ports should remain
+        self.assertEqual(normalize_url("http://example.com:8080"), "http://example.com:8080")
+
 
 class TestSimilarityCalculations(unittest.TestCase):
     """Test similarity calculation functions"""

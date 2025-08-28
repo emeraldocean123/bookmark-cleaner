@@ -61,7 +61,7 @@ check_and_install_dependencies()
 from bs4 import BeautifulSoup
 import json
 import requests
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 import re
 import time
 import argparse
@@ -1304,41 +1304,40 @@ def normalize_url(url: str) -> str:
     """Normalize URL for duplicate detection"""
     if not url:
         return ""
-    
-    # Remove common URL variations
+
+    # Basic cleanup
     url = url.lower().strip()
-    
-    # Remove trailing slashes
-    if url.endswith('/'):
-        url = url[:-1]
-    
+
+    parsed = urlparse(url)
+
+    # Remove default ports
+    netloc = parsed.netloc
+    if parsed.scheme == 'http' and netloc.endswith(':80'):
+        netloc = netloc[:-3]
+    elif parsed.scheme == 'https' and netloc.endswith(':443'):
+        netloc = netloc[:-4]
+
     # Remove www prefix
-    if url.startswith('http://www.'):
-        url = url.replace('http://www.', 'http://', 1)
-    elif url.startswith('https://www.'):
-        url = url.replace('https://www.', 'https://', 1)
-    
+    if netloc.startswith('www.'):
+        netloc = netloc[4:]
+
+    # Remove trailing slash from path
+    path = parsed.path.rstrip('/')
+
     # Remove common tracking parameters
-    tracking_params = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
-                      'fbclid', 'gclid', '_ga', 'ref', 'source', 'campaign']
-    
-    if '?' in url:
-        base_url, params = url.split('?', 1)
-        param_pairs = params.split('&')
-        clean_params = []
-        
-        for param in param_pairs:
-            if '=' in param:
-                key = param.split('=')[0]
-                if key not in tracking_params:
-                    clean_params.append(param)
-        
-        if clean_params:
-            url = base_url + '?' + '&'.join(clean_params)
-        else:
-            url = base_url
-    
-    return url
+    tracking_params = {
+        'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+        'fbclid', 'gclid', '_ga', 'ref', 'source', 'campaign'
+    }
+    query_pairs = [
+        (k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+        if k not in tracking_params
+    ]
+    query = urlencode(query_pairs)
+
+    normalized = urlunparse(parsed._replace(netloc=netloc, path=path, query=query))
+
+    return normalized.rstrip('/')
 
 
 def calculate_title_similarity(title1: str, title2: str) -> float:
