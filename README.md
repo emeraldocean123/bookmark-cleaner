@@ -365,3 +365,11 @@ MIT License
 ## Review Routing
 
 - CODEOWNERS routes PR reviews to `@emeraldocean123` automatically.
+## Shared Tooling
+
+This project now relies on the consolidated helpers in `~/Documents/dev/shared`.
+- Nix lint/fix helpers: `~/Documents/dev/shared/scripts/nix/`
+- Bootstrap and maintenance scripts: `~/Documents/dev/shared/scripts/{bootstrap,maintenance}`
+
+If the shared repo is missing, clone or update Documents/dev/shared before running the optional just ai-fix recipe.
+
